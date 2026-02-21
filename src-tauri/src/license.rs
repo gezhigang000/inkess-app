@@ -6,11 +6,9 @@ use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;
 
-// Must match LICENSE_HMAC_KEY in Cloudflare Worker
-// Replace with your own HMAC key segments for license verification
-const HMAC_KEY_A: &[u8] = b"YOUR_HMAC_KEY_SEGMENT_A_HERE";
-const HMAC_KEY_B: &[u8] = b"YOUR_HMAC_KEY_SEGMENT_B_HERE";
-const HMAC_KEY_C: &[u8] = b"YOUR_HMAC_KEY_SEGMENT_C_HERE";
+// HMAC key segments injected at build time from security/hmac_keys.rs (private repo)
+// or generated as placeholders for public/open-source builds
+include!(concat!(env!("OUT_DIR"), "/hmac_keys.rs"));
 
 fn hmac_key() -> Vec<u8> {
     let mut key = Vec::with_capacity(HMAC_KEY_A.len() + HMAC_KEY_B.len() + HMAC_KEY_C.len());
