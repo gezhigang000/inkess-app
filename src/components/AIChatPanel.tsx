@@ -130,6 +130,67 @@ const HISTORY_KEY = 'inkess-ai-history'
 const SESSIONS_KEY = 'inkess-ai-sessions'
 const MAX_SESSIONS = 20
 
+// Auto-compact: summarize older messages when conversation gets long
+const COMPACT_MSG_THRESHOLD = 30
+const COMPACT_KEEP_RECENT = 10
+
+async function compactHistory(
+  config: AiConfig,
+  msgs: UIMessage[],
+): Promise<{ summary: string; kept: UIMessage[] } | null> {
+  const userAssistant = msgs.filter(m => m.role === 'user' || m.role === 'assistant')
+  if (userAssistant.length <= COMPACT_MSG_THRESHOLD) return null
+
+  const oldMsgs = userAssistant.slice(0, -COMPACT_KEEP_RECENT)
+  const recentMsgs = userAssistant.slice(-COMPACT_KEEP_RECENT)
+
+  // Cap conversation string to ~8KB to avoid token overflow
+  let totalLen = 0
+  const cappedOld: string[] = []
+  for (const m of oldMsgs) {
+    const line = `[${m.role}]: ${m.content.slice(0, 500)}`
+    if (totalLen + line.length > 8192) break
+    cappedOld.push(line)
+    totalLen += line.length
+  }
+  const conversation = cappedOld.join('\n\n')
+  if (!conversation) return null
+
+  const body = {
+    model: config.model,
+    messages: [
+      { role: 'system', content: 'Summarize this conversation history concisely, preserving: 1) User goals and tasks 2) Key decisions made 3) Important code/file references 4) Problems encountered and solutions. Output a structured summary, max 500 words.' },
+      { role: 'user', content: conversation },
+    ],
+    temperature: 0.3,
+    max_tokens: 800,
+  }
+
+  const url = `${config.api_url.replace(/\/$/, '')}/chat/completions`
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 10_000) // 10s timeout
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${config.api_key}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    })
+    clearTimeout(timer)
+    if (!resp.ok) return null
+    const data = await resp.json()
+    const summary = data.choices?.[0]?.message?.content
+    if (!summary) return null
+    return { summary, kept: recentMsgs }
+  } catch {
+    clearTimeout(timer)
+    return null
+  }
+}
+
 interface ChatSession {
   id: string
   title: string
@@ -435,24 +496,37 @@ export function AIChatPanel({ visible, currentDir, onClose, onToast, isPro = tru
       deepPrompt,
       memoryBlock,
     ].filter(Boolean).join('\n\n')
-    const apiMessages: ChatMessage[] = [
-      { role: 'system', content: sysContent },
-    ]
-    // Include recent conversation context
-    const recent = [...messagesRef.current, userMsg]
-    for (const m of recent.slice(-20)) {
-      if (m.role === 'user' || m.role === 'assistant') {
-        apiMessages.push({ role: m.role, content: m.content })
+    // Auto-compact: summarize old messages when conversation is long
+    const allMsgs = [...messagesRef.current, userMsg]
+    const convMsgs = allMsgs.filter(m => m.role === 'user' || m.role === 'assistant')
+    let contextSummary = ''
+
+    if (convMsgs.length > COMPACT_MSG_THRESHOLD) {
+      const compact = await compactHistory(config, allMsgs)
+      if (compact) {
+        contextSummary = `\n\n[Conversation History Summary]\n${compact.summary}\n[End Summary — Recent messages follow]`
       }
+    }
+
+    const apiMessages: ChatMessage[] = [
+      { role: 'system', content: sysContent + contextSummary },
+    ]
+    // If compacted, keep last COMPACT_KEEP_RECENT user/assistant msgs; otherwise last 20
+    const keepCount = contextSummary ? COMPACT_KEEP_RECENT : 20
+    const recentUA = allMsgs
+      .filter(m => m.role === 'user' || m.role === 'assistant')
+      .slice(-keepCount)
+    for (const m of recentUA) {
+      apiMessages.push({ role: m.role, content: m.content })
     }
 
     try {
       await aiChat(sessionId, apiMessages, config, deepMode, currentDir || undefined)
       // Auto-summarize after 20 user/assistant messages
-      const convMsgs = [...messagesRef.current, userMsg].filter(m => m.role === 'user' || m.role === 'assistant')
-      if (convMsgs.length >= 20 && !summarizedRef.current && currentDir) {
+      const sumMsgs = [...messagesRef.current, userMsg].filter(m => m.role === 'user' || m.role === 'assistant')
+      if (sumMsgs.length >= 20 && !summarizedRef.current && currentDir) {
         summarizedRef.current = true
-        triggerSummarize(config, convMsgs, currentDir, sessionId).then(summary => {
+        triggerSummarize(config, sumMsgs, currentDir, sessionId).then(summary => {
           if (summary) {
             aiSaveMemory(currentDir, summary).catch(() => {})
             aiLoadMemories(currentDir).then(setMemories).catch(() => {})

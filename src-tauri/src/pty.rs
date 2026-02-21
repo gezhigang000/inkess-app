@@ -100,7 +100,14 @@ pub fn pty_spawn(
             if !var.key.chars().all(|c| c.is_alphanumeric() || c == '_') {
                 return Err("Invalid environment variable name".to_string());
             }
-            safe_eprintln!("[pty] env: {}={}...", var.key, &var.value[..var.value.len().min(20)]);
+            let truncated_val = if var.value.len() > 20 {
+                let mut end = 20;
+                while end > 0 && !var.value.is_char_boundary(end) { end -= 1; }
+                &var.value[..end]
+            } else {
+                &var.value
+            };
+            safe_eprintln!("[pty] env: {}={}...", var.key, truncated_val);
             cmd.env(&var.key, &var.value);
         }
     } else {

@@ -85,6 +85,21 @@ export async function searchFiles(dir: string, query: string): Promise<string[]>
   return invoke<string[]>('search_files', { dir, query })
 }
 
+export async function copyFileToDir(src: string, destDir: string): Promise<string> {
+  return invoke<string>('copy_file_to_dir', { src, destDir })
+}
+
+export async function openImageDialog(): Promise<string | null> {
+  const selected = await open({
+    title: 'Select Image',
+    filters: [
+      { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp'] },
+    ],
+    multiple: false,
+  })
+  return typeof selected === 'string' ? selected : null
+}
+
 export async function getFileSize(path: string): Promise<number> {
   return invoke<number>('get_file_size', { path })
 }

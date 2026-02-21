@@ -424,6 +424,25 @@ const dict: Record<string, { zh: string; en: string }> = {
   'about.shortcut.terminal': { zh: '切换终端', en: 'Toggle terminal' },
   'about.shortcut.devConsole': { zh: '调试控制台', en: 'Debug console' },
   'about.shortcut.exitEdit': { zh: '退出编辑', en: 'Exit editing' },
+  // Markdown Toolbar
+  'mdToolbar.bold': { zh: '粗体', en: 'Bold' },
+  'mdToolbar.italic': { zh: '斜体', en: 'Italic' },
+  'mdToolbar.strikethrough': { zh: '删除线', en: 'Strikethrough' },
+  'mdToolbar.code': { zh: '行内代码', en: 'Inline Code' },
+  'mdToolbar.heading': { zh: '标题', en: 'Heading' },
+  'mdToolbar.ul': { zh: '无序列表', en: 'Bullet List' },
+  'mdToolbar.ol': { zh: '有序列表', en: 'Ordered List' },
+  'mdToolbar.quote': { zh: '引用', en: 'Quote' },
+  'mdToolbar.codeBlock': { zh: '代码块', en: 'Code Block' },
+  'mdToolbar.hr': { zh: '分隔线', en: 'Horizontal Rule' },
+  'mdToolbar.link': { zh: '链接', en: 'Link' },
+  'mdToolbar.image': { zh: '图片', en: 'Image' },
+  'mdToolbar.table': { zh: '表格', en: 'Table' },
+  'mdToolbar.tableSize': { zh: '{cols} × {rows} 表格', en: '{cols} × {rows} table' },
+  'mdToolbar.linkUrl': { zh: 'URL 地址', en: 'URL' },
+  'mdToolbar.linkText': { zh: '显示文本', en: 'Display Text' },
+  'mdToolbar.insert': { zh: '插入', en: 'Insert' },
+  'mdToolbar.saveFirst': { zh: '请先保存文件', en: 'Please save the file first' },
 }
 
 interface I18nContextValue {

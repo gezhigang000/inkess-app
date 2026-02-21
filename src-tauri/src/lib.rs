@@ -987,6 +987,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
             setup_menu(app)?;
+            ai::cleanup_decay_cache();
             Ok(())
         })
         .manage(DbState(Mutex::new(conn)))
@@ -1011,7 +1012,7 @@ pub fn run() {
             get_snapshot_stats, cleanup_snapshots,
             get_initial_file, open_file_or_dir,
             fileops::create_file, fileops::create_directory,
-            fileops::rename_entry, fileops::delete_to_trash, fileops::search_files,
+            fileops::rename_entry, fileops::delete_to_trash, fileops::search_files, fileops::copy_file_to_dir,
             watcher::watch_directory, watcher::unwatch_directory,
             pty::pty_spawn, pty::pty_write, pty::pty_resize, pty::pty_kill,
             git::git_status, git::git_init, git::git_stage, git::git_unstage,
@@ -1069,8 +1070,27 @@ pub fn run() {
                     if let Ok(mut sessions) = pty_state.sessions.lock() {
                         for (sid, mut session) in sessions.drain() {
                             safe_eprintln!("[cleanup] killing PTY session: {}", sid);
-                            let _ = session.child.kill();
-                            let _ = session.child.wait();
+                            if let Err(e) = session.child.kill() {
+                                safe_eprintln!("[cleanup] kill failed for {}: {}", sid, e);
+                            }
+                            // Use try_wait with timeout to avoid blocking indefinitely
+                            let start = std::time::Instant::now();
+                            loop {
+                                match session.child.try_wait() {
+                                    Ok(Some(_)) => break,
+                                    Ok(None) => {
+                                        if start.elapsed() > std::time::Duration::from_secs(2) {
+                                            safe_eprintln!("[cleanup] wait timed out for PTY {}", sid);
+                                            break;
+                                        }
+                                        std::thread::sleep(std::time::Duration::from_millis(50));
+                                    }
+                                    Err(e) => {
+                                        safe_eprintln!("[cleanup] wait failed for {}: {}", sid, e);
+                                        break;
+                                    }
+                                }
+                            }
                         }
                     }
                     // Disconnect all MCP servers

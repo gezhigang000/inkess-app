@@ -8,6 +8,8 @@ import { ImageViewer } from './viewers/ImageViewer'
 import hljs from 'highlight.js'
 import DOMPurify from 'dompurify'
 import { useI18n } from '../lib/i18n'
+import { MarkdownToolbar } from './MarkdownToolbar'
+import { toggleInlineWrap, insertAtCursor } from '../lib/markdownFormat'
 
 // Lazy load heavy viewers
 const PdfViewer = lazy(() => import('./viewers/PdfViewer').then(m => ({ default: m.PdfViewer })))
@@ -47,9 +49,10 @@ interface ContentAreaProps {
   canExport?: boolean
   canEdit?: boolean
   isReadOnly?: boolean
+  currentFilePath?: string
 }
 
-export function ContentArea({ content, themeId, editing, onEdit, onExport, onToggleEdit, canExport, canEdit, isReadOnly }: ContentAreaProps) {
+export function ContentArea({ content, themeId, editing, onEdit, onExport, onToggleEdit, canExport, canEdit, isReadOnly, currentFilePath }: ContentAreaProps) {
   const { t } = useI18n()
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null)
   const ctxRef = useRef<HTMLDivElement>(null)
@@ -90,7 +93,7 @@ export function ContentArea({ content, themeId, editing, onEdit, onExport, onTog
   const inner = (() => {
     switch (content.type) {
       case 'markdown':
-        return <MarkdownViewer text={content.text} themeId={themeId} editing={editing} onEdit={onEdit} />
+        return <MarkdownViewer text={content.text} themeId={themeId} editing={editing} onEdit={onEdit} currentFilePath={currentFilePath} />
       case 'text':
         return <TextViewer text={content.text} editing={editing} onEdit={onEdit} />
       case 'code':
@@ -177,8 +180,8 @@ function formatMarkdown(text: string): string {
   return formatted
 }
 
-function MarkdownViewer({ text, themeId, editing, onEdit }: {
-  text: string; themeId: ThemeId; editing: boolean; onEdit: (text: string) => void
+function MarkdownViewer({ text, themeId, editing, onEdit, currentFilePath }: {
+  text: string; themeId: ThemeId; editing: boolean; onEdit: (text: string) => void; currentFilePath?: string
 }) {
   const html = useMemo(() => renderMarkdown(text), [text])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -187,14 +190,71 @@ function MarkdownViewer({ text, themeId, editing, onEdit }: {
     if (editing && textareaRef.current) textareaRef.current.focus()
   }, [editing])
 
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const ta = textareaRef.current
+    if (!ta) return
+    const mod = e.metaKey || e.ctrlKey
+    if (mod && e.key === 'b') {
+      e.preventDefault()
+      onEdit(toggleInlineWrap(ta, '**'))
+    } else if (mod && e.key === 'i') {
+      e.preventDefault()
+      onEdit(toggleInlineWrap(ta, '*'))
+    } else if (mod && e.shiftKey && (e.key === 'x' || e.key === 'X')) {
+      e.preventDefault()
+      onEdit(toggleInlineWrap(ta, '~~'))
+    } else if (mod && e.key === 'k') {
+      e.preventDefault()
+      // Insert link template
+      const sel = ta.value.substring(ta.selectionStart, ta.selectionEnd)
+      const link = sel ? `[${sel}](url)` : '[text](url)'
+      onEdit(insertAtCursor(ta, link))
+    }
+  }, [onEdit])
+
+  const handlePaste = useCallback(async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+    for (const item of Array.from(items)) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault()
+        if (!currentFilePath) return
+        const blob = item.getAsFile()
+        if (!blob) return
+        const ext = item.type.split('/')[1] === 'jpeg' ? 'jpg' : item.type.split('/')[1] || 'png'
+        const filename = `paste-${Date.now()}.${ext}`
+        const parts = currentFilePath.replace(/\\/g, '/').split('/')
+        parts.pop()
+        const parentDir = parts.join('/')
+        const fullPath = parentDir + '/' + filename
+        try {
+          const buffer = await blob.arrayBuffer()
+          const bytes = Array.from(new Uint8Array(buffer))
+          const { invoke } = await import('@tauri-apps/api/core')
+          await invoke('write_file', { path: fullPath, contents: bytes })
+          const ta = textareaRef.current
+          if (ta) onEdit(insertAtCursor(ta, `![](${filename})`))
+        } catch (err) {
+          console.error('Paste image failed:', err)
+        }
+        return
+      }
+    }
+  }, [currentFilePath, onEdit])
+
   return (
-    <div className="flex-1 overflow-y-auto relative">
-      <div style={{ width: '100%', padding: '40px 40px 60px' }}>
+    <div className="flex-1 overflow-y-auto relative" style={{ display: 'flex', flexDirection: 'column' }}>
+      {editing && (
+        <MarkdownToolbar textareaRef={textareaRef} onEdit={onEdit} currentFilePath={currentFilePath} />
+      )}
+      <div style={{ width: '100%', padding: '40px 40px 60px', flex: 1 }}>
         {editing ? (
           <textarea
             ref={textareaRef}
             value={text}
             onChange={e => onEdit(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             className="w-full min-h-[calc(100vh-160px)] resize-none outline-none border-none text-[15px] leading-[1.75]"
             style={{
               background: 'transparent',

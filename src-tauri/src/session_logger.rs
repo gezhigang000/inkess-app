@@ -56,11 +56,12 @@ impl SessionLogger {
     }
 
     pub fn write(&mut self, data: &[u8]) -> Result<(), String> {
-        if self.bytes_written + data.len() > MAX_LOG_BYTES {
+        let new_total = self.bytes_written + data.len();
+        if new_total > MAX_LOG_BYTES {
             return Err("Log file size limit exceeded".to_string());
         }
         self.writer.write_all(data).map_err(|e| e.to_string())?;
-        self.bytes_written += data.len();
+        self.bytes_written = new_total;
         Ok(())
     }
 

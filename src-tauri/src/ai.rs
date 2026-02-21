@@ -343,7 +343,7 @@ fn tool_definitions(mcp_tools: &[(String, crate::mcp::protocol::McpToolDef)]) ->
 /// Returns None if the resolved path escapes the workspace root.
 fn sandbox_path(raw: &str, cwd: &str) -> Option<String> {
     if cwd.is_empty() {
-        return Some(raw.to_string());
+        return None; // Reject all paths when no workspace is open
     }
     let base = std::path::Path::new(cwd).canonicalize().ok()?;
     let target = if std::path::Path::new(raw).is_absolute() {
@@ -640,8 +640,12 @@ async fn fetch_url(url: &str) -> String {
     if text.len() > remaining {
         let mut end = remaining;
         while end > 0 && !text.is_char_boundary(end) { end -= 1; }
-        result.push_str(&text[..end]);
-        result.push_str("\n\n[Content truncated]");
+        if end == 0 {
+            result.push_str("\n\n[Content too large to display]");
+        } else {
+            result.push_str(&text[..end]);
+            result.push_str("\n\n[Content truncated]");
+        }
     } else {
         result.push_str(&text);
     }
@@ -1235,14 +1239,13 @@ pub async fn ai_chat(
                 }
             };
 
-            buffer.push_str(&String::from_utf8_lossy(&chunk));
-
             // Guard against malformed SSE data causing unbounded buffer growth
-            if buffer.len() > MAX_SSE_BUFFER {
-                safe_eprintln!("[ai] SSE buffer exceeded {}KB, truncating", MAX_SSE_BUFFER / 1024);
+            if buffer.len() + chunk.len() > MAX_SSE_BUFFER {
+                safe_eprintln!("[ai] SSE buffer would exceed {}KB limit, clearing", MAX_SSE_BUFFER / 1024);
                 buffer.clear();
                 continue;
             }
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
 
             // Process complete SSE lines
             while let Some(pos) = buffer.find('\n') {
@@ -1344,12 +1347,47 @@ pub async fn ai_chat(
                     execute_tool(&tc.function.name, &tc.function.arguments, &config, &app, cwd_str).await
                 };
 
-                // Cap tool result size to prevent conversation memory explosion
-                const MAX_TOOL_RESULT: usize = 32 * 1024; // 32KB
-                let result = if result.len() > MAX_TOOL_RESULT {
-                    let mut end = MAX_TOOL_RESULT;
-                    while end > 0 && !result.is_char_boundary(end) { end -= 1; }
-                    format!("{}...\n[Truncated: result was {} bytes]", &result[..end], result.len())
+                // Auto-decay: save large tool results to file, replace with reference + hint
+                const DECAY_THRESHOLD: usize = 32 * 1024; // 32KB
+                let result = if result.len() > DECAY_THRESHOLD {
+                    let decay_dir = crate::app_data_dir().join("inkess").join("decay-cache");
+                    let _ = fs::create_dir_all(&decay_dir);
+                    // Sanitize tool name for safe file naming
+                    let safe_name: String = tc.function.name.chars()
+                        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+                        .collect();
+                    let file_name = format!(
+                        "decay-{}-{}.txt",
+                        &safe_name[..safe_name.len().min(32)],
+                        &uuid::Uuid::new_v4().to_string()[..8]
+                    );
+                    let decay_path = decay_dir.join(&file_name);
+                    let original_size = result.len();
+
+                    // Keep first 2KB as preview
+                    let mut preview_end = 2048.min(result.len());
+                    while preview_end > 0 && !result.is_char_boundary(preview_end) {
+                        preview_end -= 1;
+                    }
+                    let preview = &result[..preview_end];
+                    let hint = decay_tool_hint(&tc.function.name);
+
+                    match fs::write(&decay_path, &result) {
+                        Ok(_) => format!(
+                            "{}...\n\n[Output too large ({:.0}KB) — full content saved to: {}]\n{}",
+                            preview,
+                            original_size as f64 / 1024.0,
+                            decay_path.display(),
+                            hint
+                        ),
+                        Err(_) => {
+                            // Fallback: simple truncation if file write fails
+                            format!(
+                                "{}...\n[Truncated: result was {} bytes]\n{}",
+                                preview, original_size, hint
+                            )
+                        }
+                    }
                 } else {
                     result
                 };
@@ -1397,4 +1435,30 @@ pub async fn ai_chat(
         content: String::new(),
     });
     Ok(())
+}
+
+fn decay_tool_hint(tool_name: &str) -> &'static str {
+    match tool_name {
+        "read_file" => "Hint: Use read_file with a specific section, or run_python to process the file in chunks.",
+        "grep_files" => "Hint: Use a more specific pattern or add file_pattern filter to narrow results.",
+        "list_directory" => "Hint: List a more specific subdirectory instead.",
+        "web_search" | "fetch_url" => "Hint: Use fetch_url on specific URLs for targeted content.",
+        "run_python" => "Hint: Reduce print output in your code, or write results to a file with write_file.",
+        "search_knowledge" => "Hint: Use a more specific query to narrow results.",
+        _ => "Hint: Use read_file to access the saved full content if needed.",
+    }
+}
+
+pub fn cleanup_decay_cache() {
+    let decay_dir = crate::app_data_dir().join("inkess").join("decay-cache");
+    if let Ok(entries) = fs::read_dir(&decay_dir) {
+        let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(24 * 3600);
+        for entry in entries.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if meta.modified().map(|t| t < cutoff).unwrap_or(false) {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
 }

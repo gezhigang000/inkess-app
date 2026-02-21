@@ -128,6 +128,58 @@ fn search_recursive(
     }
 }
 
+#[tauri::command]
+pub fn copy_file_to_dir(src: String, dest_dir: String) -> Result<String, String> {
+    let src_path = PathBuf::from(&src)
+        .canonicalize()
+        .map_err(|_| "Source file does not exist".to_string())?;
+    if !src_path.is_file() {
+        return Err("Source is not a file".to_string());
+    }
+    let dest_path = PathBuf::from(&dest_dir)
+        .canonicalize()
+        .map_err(|_| "Destination directory does not exist".to_string())?;
+    if !dest_path.is_dir() {
+        return Err("Destination is not a directory".to_string());
+    }
+    // Validate both paths against blocked paths
+    let src_str = src_path.to_string_lossy();
+    let dest_str = dest_path.to_string_lossy();
+    for blocked in BLOCKED_PATHS {
+        if src_str.contains(blocked) || dest_str.contains(blocked) {
+            return Err("Permission denied".to_string());
+        }
+    }
+    let file_name = src_path
+        .file_name()
+        .ok_or("Invalid source filename".to_string())?
+        .to_string_lossy()
+        .to_string();
+    let stem = src_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let ext = src_path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+
+    let mut target = dest_path.join(&file_name);
+    let mut counter = 1;
+    while target.exists() {
+        target = dest_path.join(format!("{}-{}{}", stem, counter, ext));
+        counter += 1;
+    }
+    fs::copy(&src_path, &target)
+        .map_err(|e| format!("Copy failed: {}", e))?;
+    let final_name = target
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    Ok(final_name)
+}
+
 const GREP_MAX_LINE_LEN: usize = 500;
 
 fn truncate_line(s: &str, max: usize) -> String {
@@ -137,6 +189,9 @@ fn truncate_line(s: &str, max: usize) -> String {
     let mut end = max;
     while end > 0 && !s.is_char_boundary(end) {
         end -= 1;
+    }
+    if end == 0 {
+        return "[truncated]".to_string();
     }
     format!("{}...", &s[..end])
 }

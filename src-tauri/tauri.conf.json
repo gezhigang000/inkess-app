@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Inkess",
-  "version": "1.6.0",
+  "version": "1.6.2",
   "identifier": "com.inkess.markdown",
   "build": {
     "frontendDist": "../dist",

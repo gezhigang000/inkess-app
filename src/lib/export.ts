@@ -386,6 +386,9 @@ export async function exportFile(
   filePath: string,
   isPro: boolean = true,
 ): Promise<string> {
+  if (!markdown || !markdown.trim()) {
+    throw new Error('Cannot export empty document')
+  }
   const raw = filePath || 'document'
   // Extract basename for display, keep full path for defaultPath
   const baseName = raw.includes('/') ? raw.split('/').pop()! : raw

@@ -55,7 +55,10 @@ fn run_git_with_timeout(cwd: &str, args: &[&str], timeout: std::time::Duration) 
                 // Still running — check timeout
                 if start.elapsed() > timeout {
                     let _ = child.kill();
-                    let _ = child.wait();
+                    match child.wait() {
+                        Ok(_) => {},
+                        Err(e) => safe_eprintln!("[git] wait after kill failed: {}", e),
+                    }
                     return Err(format!("Git operation timed out after {}s", timeout.as_secs()));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));

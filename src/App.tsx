@@ -162,6 +162,7 @@ function AppInner() {
   const currentFilePathRef = useRef(currentFilePath)
   const hasUnsavedRef = useRef(hasUnsavedChanges)
   const [, startTransition] = useTransition()
+  const prevBlobUrlRef = useRef<string | null>(null)
   const isDark = themeId === 'dark'
   const isViewingHistory = activeSnapshotId !== null
   const currentFileType = currentFile ? getFileType(currentFile) : 'markdown'
@@ -431,6 +432,7 @@ function AppInner() {
           const sizeMB = (size / 1024 / 1024).toFixed(1)
           const ok = window.confirm(t('toast.largeFile', { size: sizeMB }))
           if (!ok) { setLoading(false); return }
+          if (reqId !== openRequestRef.current) { setLoading(false); return }
         }
       } catch { /* ignore size check errors, proceed with open */ }
 
@@ -591,7 +593,10 @@ function AppInner() {
             await createSnapshot(currentFilePath, text).catch(() => {})
             await refreshSnapshots(currentFilePath)
           }
-        } catch { /* silent */ }
+        } catch {
+          // Auto-save failed — keep hasUnsavedChanges true so user knows data is not saved
+          console.error('[auto-save] failed for', currentFilePath)
+        }
       }, AUTOSAVE_DELAY)
     }
   }, [currentFilePath, currentFile, refreshSnapshots])
@@ -712,15 +717,25 @@ function AppInner() {
       document.removeEventListener('dragover', handleDragOver)
       document.removeEventListener('drop', handleDrop)
     }
-  }, [showToast])
+  }, [showToast, t])
 
-  // Clean up timers on unmount
+  // Clean up timers and blob URLs on unmount
   useEffect(() => {
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+      if (prevBlobUrlRef.current) URL.revokeObjectURL(prevBlobUrlRef.current)
     }
   }, [])
+
+  // Revoke previous blob URL when content changes to avoid memory leaks
+  useEffect(() => {
+    const currentBlob = content.type === 'image' && content.src.startsWith('blob:') ? content.src : null
+    if (prevBlobUrlRef.current && prevBlobUrlRef.current !== currentBlob) {
+      URL.revokeObjectURL(prevBlobUrlRef.current)
+    }
+    prevBlobUrlRef.current = currentBlob
+  }, [content])
 
   // File association: initial file on launch + runtime events
   useEffect(() => {
@@ -920,6 +935,7 @@ function AppInner() {
             themeId={themeId}
             editing={editing}
             onEdit={handleEdit}
+            currentFilePath={currentFilePath}
             onExport={async (fmt) => {
               if (!canExport) { showToast(t('toast.exportNotSupported')); return }
               setLoading(true)
