@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="108" height="108">
+  <!--
+    Ink Logo — Rounded Icon (for App Icon) with border
+    Color: Deep charcoal gray #2b2d33 on white, with rounded rect background
+  -->
+  <defs>
+    <clipPath id="rounded-clip">
+      <rect width="108" height="108" rx="22" ry="22"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#rounded-clip)">
+    <!-- Background — pure white -->
+    <rect width="108" height="108" fill="#ffffff" rx="22" ry="22"/>
+    <!-- Rounded border frame -->
+    <rect x="1.5" y="1.5" width="105" height="105" rx="21" ry="21" fill="none" stroke="#2b2d33" stroke-width="2"/>
+    <!-- Main ink drop — teardrop shape -->
+    <path d="M54 18 C54 18, 36 46, 36 60 C36 70.5 44.06 79 54 79 C63.94 79 72 70.5 72 60 C72 46 54 18 54 18Z" fill="#2b2d33"/>
+    <!-- Subtle splash ring at the bottom -->
+    <ellipse cx="54" cy="84" rx="14" ry="3.5" fill="none" stroke="#2b2d33" stroke-width="1.8" opacity="0.35"/>
+    <ellipse cx="54" cy="84" rx="8" ry="2" fill="none" stroke="#2b2d33" stroke-width="1.2" opacity="0.2"/>
+  </g>
+</svg>

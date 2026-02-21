@@ -1,0 +1,10 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/schemas/
+.vite/
+*.DS_Store
+.env
+.env.*
+src-tauri/python-standalone/*
+!src-tauri/python-standalone/.gitkeep

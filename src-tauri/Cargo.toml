@@ -1,0 +1,59 @@
+[package]
+name = "inkess"
+version = "1.5.0"
+description = "Inkess — Markdown Reader & Converter"
+authors = ["Inkess Team"]
+license = "MIT"
+repository = ""
+edition = "2021"
+rust-version = "1.77.2"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.4", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+tauri = { version = "2.10.0", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-window-state = "2"
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+chrono = "0.4"
+encoding_rs = "0.8"
+trash = "5"
+notify-debouncer-full = "0.4"
+uuid = { version = "1", features = ["v4"] }
+portable-pty = "0.8"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+futures-util = "0.3"
+flate2 = "1"
+tar = "0.4"
+tauri-plugin-updater = "2.10.0"
+tauri-plugin-process = "2.3.1"
+ort = { version = "2.0.0-rc.11", features = ["ndarray"] }
+sqlite-vec = "0.1"
+tokenizers = { version = "0.21", default-features = false, features = ["esaxx_fast", "fancy-regex"] }
+ndarray = "0.17"
+pdf-extract = "0.7"
+calamine = "0.26"
+zip = "2"
+quick-xml = "0.37"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.26"
+objc = "0.2"
+
+[lints.rust]
+# objc crate's msg_send! macro emits unexpected_cfgs warnings for cargo-clippy
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }

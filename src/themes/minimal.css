@@ -1,0 +1,58 @@
+/* Minimal Theme */
+.md-body.theme-minimal {
+  font-family: 'DM Sans', system-ui, sans-serif;
+  font-size: 15.5px;
+  line-height: 1.7;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+.md-body.theme-minimal h1,
+.md-body.theme-minimal h2,
+.md-body.theme-minimal h3,
+.md-body.theme-minimal h4 {
+  font-family: 'DM Sans', system-ui, sans-serif;
+  font-weight: 700;
+  line-height: 1.25;
+  margin-top: 2em;
+  margin-bottom: 0.5em;
+  letter-spacing: -0.02em;
+}
+.md-body.theme-minimal h1 { font-size: 1.8em; margin-top: 0; }
+.md-body.theme-minimal h2 { font-size: 1.35em; }
+.md-body.theme-minimal h3 { font-size: 1.1em; }
+.md-body.theme-minimal p { margin: 0 0 1em; }
+.md-body.theme-minimal a { color: var(--text); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--text-3); }
+.md-body.theme-minimal a:hover { text-decoration-color: var(--text); }
+.md-body.theme-minimal strong { font-weight: 600; }
+.md-body.theme-minimal blockquote {
+  border-left: 2px solid var(--border);
+  padding: 0 0 0 16px;
+  margin: 1em 0;
+  color: var(--text-2);
+}
+.md-body.theme-minimal code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.85em;
+  background: var(--sidebar-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.md-body.theme-minimal pre.hljs {
+  background: #1c1917;
+  color: #e7e5e4;
+  padding: 16px 20px;
+  border-radius: 8px;
+  margin: 1em 0;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.6;
+}
+[data-theme="dark"] .md-body.theme-minimal pre.hljs { background: #0c0a09; }
+.md-body.theme-minimal pre.hljs code { background: none; padding: 0; font-size: inherit; color: inherit; }
+.md-body.theme-minimal ul, .md-body.theme-minimal ol { margin: 0 0 1em; padding-left: 1.5em; }
+.md-body.theme-minimal li { margin: 0.2em 0; }
+.md-body.theme-minimal hr { border: none; border-top: 1px solid var(--border-s); margin: 2em 0; }
+.md-body.theme-minimal img { max-width: 100%; border-radius: 6px; margin: 1em 0; }
+.md-body.theme-minimal table { width: 100%; border-collapse: collapse; margin: 1em 0; font-size: 13.5px; }
+.md-body.theme-minimal th { text-align: left; padding: 8px 12px; border-bottom: 2px solid var(--border); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-3); }
+.md-body.theme-minimal td { padding: 8px 12px; border-bottom: 1px solid var(--border-s); }
