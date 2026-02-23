@@ -25,11 +25,11 @@ jobs:
       - id: set-matrix
         run: |
           if [[ "${{ github.event.inputs.platform }}" == "macos-only" ]]; then
-            echo 'matrix={"include":[{"platform":"macos-latest","target":"aarch64-apple-darwin","label":"macOS-arm64"},{"platform":"macos-latest","target":"x86_64-apple-darwin","label":"macOS-x64"}]}' >> $GITHUB_OUTPUT
+            echo 'matrix={"include":[{"platform":"macos-latest","target":"aarch64-apple-darwin","label":"macOS-arm64"}]}' >> $GITHUB_OUTPUT
           elif [[ "${{ github.event.inputs.platform }}" == "windows-only" ]]; then
             echo 'matrix={"include":[{"platform":"windows-latest","target":"x86_64-pc-windows-msvc","label":"Windows-x64"}]}' >> $GITHUB_OUTPUT
           else
-            echo 'matrix={"include":[{"platform":"macos-latest","target":"aarch64-apple-darwin","label":"macOS-arm64"},{"platform":"macos-latest","target":"x86_64-apple-darwin","label":"macOS-x64"},{"platform":"windows-latest","target":"x86_64-pc-windows-msvc","label":"Windows-x64"}]}' >> $GITHUB_OUTPUT
+            echo 'matrix={"include":[{"platform":"macos-latest","target":"aarch64-apple-darwin","label":"macOS-arm64"},{"platform":"windows-latest","target":"x86_64-pc-windows-msvc","label":"Windows-x64"}]}' >> $GITHUB_OUTPUT
           fi
 
   build:
