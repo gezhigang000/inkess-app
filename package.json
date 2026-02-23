@@ -1,7 +1,7 @@
 {
   "name": "inkess",
   "private": true,
-  "version": "1.6.2",
+  "version": "2.2.0",
   "description": "Inkess — 简单，有序",
   "type": "module",
   "scripts": {

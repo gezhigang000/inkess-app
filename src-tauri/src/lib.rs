@@ -1006,6 +1006,7 @@ pub fn run() {
             registry: std::sync::Arc::new(tokio::sync::Mutex::new(mcp::registry::McpRegistry::new())),
             health_check_handle: std::sync::Mutex::new(None),
         })
+        .manage(ai::AiCancelRegistry::new())
         .invoke_handler(tauri::generate_handler![
             read_file, read_file_binary, read_file_lines, save_file, list_directory, write_file, get_file_size,
             create_snapshot, list_snapshots, get_snapshot_content,
@@ -1020,7 +1021,7 @@ pub fn run() {
             git::git_remote_add, git::git_remote_list, git::git_log,
             git::git_config_user, git::setup_ssh_key,
             ai::ai_save_config, ai::ai_load_config, ai::ai_test_connection, ai::ai_test_search, ai::ai_chat,
-            ai::ai_save_memory, ai::ai_load_memories,
+            ai::ai_save_memory, ai::ai_load_memories, ai::ai_cancel_chat,
             license::license_load, license::license_activate, license::license_deactivate, license::open_external_url,
             python_setup::check_python_env,
             python_setup::preload_python_env,

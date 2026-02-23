@@ -1,20 +1,32 @@
-interface ToastProps {
+export type ToastSeverity = 'info' | 'success' | 'error' | 'warning'
+
+export interface ToastItem {
+  id: string
   message: string
+  severity: ToastSeverity
 }
 
-export function Toast({ message }: ToastProps) {
+interface ToastProps {
+  toasts: ToastItem[]
+  onDismiss: (id: string) => void
+}
+
+export function Toast({ toasts, onDismiss }: ToastProps) {
+  const visible = toasts.slice(0, 3)
   return (
-    <div
-      className="fixed bottom-6 left-1/2 px-5 py-2.5 rounded-[10px] text-[13px] font-medium z-[999] pointer-events-none transition-all duration-300"
-      style={{
-        transform: `translateX(-50%) translateY(${message ? '0' : '20px'})`,
-        opacity: message ? 1 : 0,
-        background: 'var(--text)',
-        color: 'var(--bg)',
-        boxShadow: '0 8px 30px rgba(0,0,0,0.08), 0 0 1px rgba(0,0,0,0.1)',
-      }}
-    >
-      {message}
+    <div className="toast-container" role="status" aria-live="polite">
+      {visible.map(t => (
+        <div key={t.id} className={`toast-item toast-${t.severity}`}>
+          <span className="toast-msg">{t.message}</span>
+          {t.severity === 'error' && (
+            <button className="toast-close" onClick={() => onDismiss(t.id)} aria-label="Close">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: 12, height: 12 }}>
+                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          )}
+        </div>
+      ))}
     </div>
   )
 }

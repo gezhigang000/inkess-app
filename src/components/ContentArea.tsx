@@ -43,6 +43,7 @@ interface ContentAreaProps {
   content: ContentData
   themeId: ThemeId
   editing: boolean
+  viewMode?: 'preview' | 'edit' | 'split'
   onEdit: (text: string) => void
   onExport?: (format: string) => void
   onToggleEdit?: () => void
@@ -52,7 +53,7 @@ interface ContentAreaProps {
   currentFilePath?: string
 }
 
-export function ContentArea({ content, themeId, editing, onEdit, onExport, onToggleEdit, canExport, canEdit, isReadOnly, currentFilePath }: ContentAreaProps) {
+export function ContentArea({ content, themeId, editing, viewMode, onEdit, onExport, onToggleEdit, canExport, canEdit, isReadOnly, currentFilePath }: ContentAreaProps) {
   const { t } = useI18n()
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null)
   const ctxRef = useRef<HTMLDivElement>(null)
@@ -93,7 +94,7 @@ export function ContentArea({ content, themeId, editing, onEdit, onExport, onTog
   const inner = (() => {
     switch (content.type) {
       case 'markdown':
-        return <MarkdownViewer text={content.text} themeId={themeId} editing={editing} onEdit={onEdit} currentFilePath={currentFilePath} />
+        return <MarkdownViewer text={content.text} themeId={themeId} editing={editing} viewMode={viewMode} onEdit={onEdit} currentFilePath={currentFilePath} />
       case 'text':
         return <TextViewer text={content.text} editing={editing} onEdit={onEdit} />
       case 'code':
@@ -180,11 +181,14 @@ function formatMarkdown(text: string): string {
   return formatted
 }
 
-function MarkdownViewer({ text, themeId, editing, onEdit, currentFilePath }: {
-  text: string; themeId: ThemeId; editing: boolean; onEdit: (text: string) => void; currentFilePath?: string
+function MarkdownViewer({ text, themeId, editing, viewMode, onEdit, currentFilePath }: {
+  text: string; themeId: ThemeId; editing: boolean; viewMode?: 'preview' | 'edit' | 'split'; onEdit: (text: string) => void; currentFilePath?: string
 }) {
   const html = useMemo(() => renderMarkdown(text), [text])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const editorScrollRef = useRef<HTMLDivElement>(null)
+  const previewScrollRef = useRef<HTMLDivElement>(null)
+  const syncingRef = useRef(false)
 
   useEffect(() => {
     if (editing && textareaRef.current) textareaRef.current.focus()
@@ -205,10 +209,43 @@ function MarkdownViewer({ text, themeId, editing, onEdit, currentFilePath }: {
       onEdit(toggleInlineWrap(ta, '~~'))
     } else if (mod && e.key === 'k') {
       e.preventDefault()
-      // Insert link template
       const sel = ta.value.substring(ta.selectionStart, ta.selectionEnd)
       const link = sel ? `[${sel}](url)` : '[text](url)'
       onEdit(insertAtCursor(ta, link))
+    } else if (!mod) {
+      // Bracket auto-pairing
+      const pairs: Record<string, string> = { '(': ')', '[': ']', '{': '}', '"': '"', "'": "'", '`': '`' }
+      const closers = new Set(Object.values(pairs))
+      const { selectionStart: s, selectionEnd: end, value } = ta
+      if (pairs[e.key]) {
+        e.preventDefault()
+        const sel = value.substring(s, end)
+        const open = e.key
+        const close = pairs[open]
+        if (sel) {
+          // Wrap selection
+          const newVal = value.substring(0, s) + open + sel + close + value.substring(end)
+          onEdit(newVal)
+          requestAnimationFrame(() => { ta.selectionStart = s + 1; ta.selectionEnd = end + 1 })
+        } else {
+          const newVal = value.substring(0, s) + open + close + value.substring(end)
+          onEdit(newVal)
+          requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = s + 1 })
+        }
+      } else if (closers.has(e.key) && value[s] === e.key && s === end) {
+        // Skip over existing closer
+        e.preventDefault()
+        requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = s + 1 })
+      } else if (e.key === 'Backspace' && s === end && s > 0) {
+        const before = value[s - 1]
+        const after = value[s]
+        if (pairs[before] && pairs[before] === after) {
+          e.preventDefault()
+          const newVal = value.substring(0, s - 1) + value.substring(s + 1)
+          onEdit(newVal)
+          requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = s - 1 })
+        }
+      }
     }
   }, [onEdit])
 
@@ -242,12 +279,60 @@ function MarkdownViewer({ text, themeId, editing, onEdit, currentFilePath }: {
     }
   }, [currentFilePath, onEdit])
 
+  const handleSyncScroll = useCallback((source: 'editor' | 'preview') => {
+    if (syncingRef.current) return
+    syncingRef.current = true
+    requestAnimationFrame(() => {
+      const from = source === 'editor' ? editorScrollRef.current : previewScrollRef.current
+      const to = source === 'editor' ? previewScrollRef.current : editorScrollRef.current
+      if (from && to) {
+        const pct = from.scrollTop / (from.scrollHeight - from.clientHeight || 1)
+        to.scrollTop = pct * (to.scrollHeight - to.clientHeight || 1)
+      }
+      syncingRef.current = false
+    })
+  }, [])
+
+  const isSplit = viewMode === 'split'
+
   return (
-    <div className="flex-1 overflow-y-auto relative" style={{ display: 'flex', flexDirection: 'column' }}>
+    <div className="flex-1 overflow-hidden relative content-fade" key={viewMode} style={{ display: 'flex', flexDirection: 'column' }}>
       {editing && (
         <MarkdownToolbar textareaRef={textareaRef} onEdit={onEdit} currentFilePath={currentFilePath} />
       )}
-      <div style={{ width: '100%', padding: '40px 40px 60px', flex: 1 }}>
+      {isSplit ? (
+        <div className="split-view">
+          <div className="split-editor" ref={editorScrollRef} onScroll={() => handleSyncScroll('editor')}>
+            <div style={{ padding: '40px 40px 60px' }}>
+              <textarea
+                ref={textareaRef}
+                value={text}
+                onChange={e => onEdit(e.target.value)}
+                onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
+                className="w-full min-h-[calc(100vh-160px)] resize-none outline-none border-none text-[15px] leading-[1.75]"
+                style={{
+                  background: 'transparent',
+                  color: 'var(--text)',
+                  fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+                  caretColor: 'var(--color-accent)',
+                }}
+                spellCheck={false}
+              />
+            </div>
+          </div>
+          <div className="split-divider" />
+          <div className="split-preview" ref={previewScrollRef} onScroll={() => handleSyncScroll('preview')}>
+            <div style={{ padding: '40px 40px 60px' }}>
+              <article
+                className={'md-body theme-' + themeId}
+                dangerouslySetInnerHTML={{ __html: html }}
+              />
+            </div>
+          </div>
+        </div>
+      ) : (
+      <div style={{ width: '100%', padding: '40px 40px 60px', flex: 1, overflowY: 'auto' }}>
         {editing ? (
           <textarea
             ref={textareaRef}
@@ -271,6 +356,7 @@ function MarkdownViewer({ text, themeId, editing, onEdit, currentFilePath }: {
           />
         )}
       </div>
+      )}
     </div>
   )
 }

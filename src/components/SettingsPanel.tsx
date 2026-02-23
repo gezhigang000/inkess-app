@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { type ThemeId, themes } from '../lib/themes'
 import { useI18n, type Language } from '../lib/i18n'
 import { useLicense } from '../lib/license'
+import { useFocusTrap } from '../lib/useFocusTrap'
 import { getSnapshotStats, cleanupSnapshots, loadSettings, saveSettings, ragStats, ragRebuild, mcpListServers, mcpAddServer, mcpRemoveServer, mcpRestartServer, getSystemEnvVars, getShellEnvVars, parseShellFunctions, type SnapshotStats, type RagIndexStats, type McpServerStatus, type TerminalProvider, type ShellFunction } from '../lib/tauri'
 
 const MCP_TEMPLATES = [
@@ -124,6 +125,7 @@ function ProviderForm({ provider, t, onSave, onCancel }: {
 export function SettingsPanel({ visible, onClose, themeId, onSetTheme, onToast, onOpenLicense, currentDir }: SettingsPanelProps) {
   const { t, lang, setLang } = useI18n()
   const { isPro, licenseKey } = useLicense()
+  const trapRef = useFocusTrap(visible)
   const [stats, setStats] = useState<SnapshotStats | null>(null)
   const [ragStat, setRagStat] = useState<RagIndexStats | null>(null)
   const [rebuilding, setRebuilding] = useState(false)
@@ -198,7 +200,7 @@ export function SettingsPanel({ visible, onClose, themeId, onSetTheme, onToast, 
 
   return (
     <div className="shortcuts-backdrop" onClick={onClose}>
-      <div className="shortcuts-modal settings-tabbed" onClick={e => e.stopPropagation()}>
+      <div ref={trapRef} className="shortcuts-modal settings-tabbed" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-1">
           <h3 style={{ margin: 0 }}>{t('settings.title')}</h3>
           <button className="sidebar-action-btn" onClick={onClose} aria-label={t('ai.close')}>

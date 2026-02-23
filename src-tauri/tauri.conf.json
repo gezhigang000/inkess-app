@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Inkess",
-  "version": "1.6.2",
+  "version": "2.2.0",
   "identifier": "com.inkess.markdown",
   "build": {
     "frontendDist": "../dist",
@@ -64,7 +64,8 @@
     ],
     "macOS": {
       "minimumSystemVersion": "10.15",
-      "entitlements": "Inkess.entitlements"
+      "entitlements": "Inkess.entitlements",
+      "infoPlist": "Info.plist"
     },
     "resources": {}
   },

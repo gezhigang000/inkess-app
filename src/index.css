@@ -242,11 +242,20 @@ textarea {
   position: absolute;
   inset: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 12px;
   background: var(--bg);
   opacity: 0.8;
   z-index: 10;
+}
+.export-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--text-2);
 }
 .loading-spinner {
   width: 24px;
@@ -576,6 +585,40 @@ textarea {
   overflow-y: auto !important;
 }
 
+/* Pane close button - hover visible */
+.terminal-pane-close {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 10;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.3);
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.terminal-container:hover .terminal-pane-close {
+  opacity: 1;
+}
+.terminal-pane-close:hover {
+  background: rgba(0, 0, 0, 0.5);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+/* Grid layout: odd last child spans full width */
+.terminal-pane-wrapper:last-child:nth-child(odd) {
+  grid-column: span 2;
+}
+
 /* Git panel - floating popup */
 .git-panel-backdrop {
   position: fixed;
@@ -832,6 +875,23 @@ textarea {
   cursor: col-resize;
   z-index: 61;
 }
+.ai-panel-resize::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 3px;
+  height: 32px;
+  border-radius: 2px;
+  background: var(--text-3);
+  opacity: 0.3;
+  transition: opacity 0.15s;
+}
+.ai-panel-resize:hover::before,
+.ai-panel-resize.dragging::before {
+  opacity: 0.7;
+}
 .ai-panel-resize:hover,
 .ai-panel-resize.dragging {
   background: var(--accent);
@@ -1002,6 +1062,73 @@ textarea {
 .ai-send-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+.ai-stop-btn {
+  background: var(--red, #dc2626);
+}
+.ai-stop-btn:hover {
+  background: #b91c1c;
+}
+/* AI search bar */
+.ai-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-s);
+  background: var(--surface);
+}
+.ai-search-bar input {
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  background: var(--bg);
+  color: var(--text);
+  outline: none;
+}
+.ai-search-bar input:focus { border-color: var(--color-accent); }
+.ai-search-count { font-size: 11px; color: var(--text-3); white-space: nowrap; }
+.ai-search-bar button {
+  background: none;
+  border: none;
+  color: var(--text-3);
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+}
+.ai-search-bar button:hover { color: var(--text); }
+
+/* Split view */
+.split-view {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+.split-editor {
+  flex: 1;
+  overflow-y: auto;
+  min-width: 0;
+}
+.split-divider {
+  width: 1px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+.split-preview {
+  flex: 1;
+  overflow-y: auto;
+  min-width: 0;
+}
+
+/* Content crossfade on mode switch */
+@keyframes contentFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.content-fade {
+  animation: contentFade 0.15s ease;
 }
 .ai-send-btn:focus-visible,
 .ai-input:focus-visible {
@@ -1204,4 +1331,54 @@ textarea {
 }
 .link-dialog-actions button:hover {
   opacity: 0.9;
+}
+
+/* Toast system */
+.toast-container {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  pointer-events: none;
+}
+.toast-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  background: var(--text);
+  color: var(--bg);
+  box-shadow: 0 8px 30px rgba(0,0,0,0.08), 0 0 1px rgba(0,0,0,0.1);
+  border-left: 3px solid transparent;
+  pointer-events: auto;
+  animation: toastIn 0.25s ease;
+}
+.toast-info { border-left-color: var(--color-accent, #2563eb); }
+.toast-success { border-left-color: var(--green, #16a34a); }
+.toast-error { border-left-color: var(--red, #dc2626); }
+.toast-warning { border-left-color: var(--amber, #d97706); }
+.toast-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: inherit;
+  opacity: 0.6;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+}
+.toast-close:hover { opacity: 1; }
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
 }

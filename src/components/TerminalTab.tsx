@@ -92,9 +92,10 @@ interface TerminalTabProps {
   active: boolean
   envVars?: Array<{ key: string; value: string }>
   schemeId?: string
+  onClose?: () => void
 }
 
-export function TerminalTab({ sessionId, cwd, active, envVars, schemeId = 'default' }: TerminalTabProps) {
+export function TerminalTab({ sessionId, cwd, active, envVars, schemeId = 'default', onClose }: TerminalTabProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -105,7 +106,7 @@ export function TerminalTab({ sessionId, cwd, active, envVars, schemeId = 'defau
     const theme = resolveSchemeTheme(schemeId)
     const term = new Terminal({
       fontSize: 13,
-      fontFamily: "'JetBrains Mono', 'Menlo', monospace",
+      fontFamily: "'JetBrains Mono', 'Menlo', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', monospace",
       cursorBlink: true,
       theme,
       allowProposedApi: true,
@@ -115,6 +116,7 @@ export function TerminalTab({ sessionId, cwd, active, envVars, schemeId = 'defau
     term.loadAddon(fitAddon)
     term.loadAddon(new WebLinksAddon())
     term.open(containerRef.current)
+
     fitAddon.fit()
 
     termRef.current = term
@@ -161,9 +163,10 @@ export function TerminalTab({ sessionId, cwd, active, envVars, schemeId = 'defau
 
     // Resize handling
     const ro = new ResizeObserver(() => {
+      if (!containerRef.current || containerRef.current.offsetWidth === 0) return
       fitAddon.fit()
-      // Delay to ensure fit() has updated cols/rows
       setTimeout(() => {
+        term.scrollToBottom()
         ptyResize(sessionId, term.cols, term.rows).catch(() => {})
       }, 50)
     })
@@ -179,10 +182,13 @@ export function TerminalTab({ sessionId, cwd, active, envVars, schemeId = 'defau
     }
   }, [sessionId, cwd, envVars])
 
-  // Re-fit when tab becomes active
+  // Re-fit and focus when tab becomes active
   useEffect(() => {
     if (active && fitRef.current) {
-      setTimeout(() => fitRef.current?.fit(), 0)
+      setTimeout(() => {
+        fitRef.current?.fit()
+        termRef.current?.focus()
+      }, 0)
     }
   }, [active])
 
@@ -209,7 +215,17 @@ export function TerminalTab({ sessionId, cwd, active, envVars, schemeId = 'defau
     <div
       ref={containerRef}
       className="terminal-container"
-      style={{ display: active ? 'block' : 'none', height: '100%' }}
-    />
+      style={{ display: active ? 'block' : 'none', height: '100%', position: 'relative' }}
+    >
+      {onClose && (
+        <button
+          className="terminal-pane-close"
+          onClick={(e) => { e.stopPropagation(); onClose() }}
+          title="Close pane"
+        >
+          ×
+        </button>
+      )}
+    </div>
   )
 }

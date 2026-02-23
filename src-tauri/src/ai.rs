@@ -1,5 +1,8 @@
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::collections::HashMap;
 
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -30,6 +33,28 @@ pub struct AiConfig {
     pub search_provider: String,
     #[serde(default)]
     pub provider_keys: std::collections::HashMap<String, String>,
+}
+
+// --- Cancel registry for active sessions ---
+pub struct AiCancelRegistry {
+    pub flags: std::sync::Mutex<HashMap<String, Arc<AtomicBool>>>,
+}
+
+impl AiCancelRegistry {
+    pub fn new() -> Self {
+        Self { flags: std::sync::Mutex::new(HashMap::new()) }
+    }
+}
+
+#[tauri::command]
+pub async fn ai_cancel_chat(app: AppHandle, session_id: String) -> Result<(), String> {
+    let registry = app.state::<AiCancelRegistry>();
+    let flags = registry.flags.lock().map_err(|e| e.to_string())?;
+    if let Some(flag) = flags.get(&session_id) {
+        flag.store(true, Ordering::Relaxed);
+        app_info!("ai", "cancel requested for session {}", session_id);
+    }
+    Ok(())
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -1138,6 +1163,19 @@ struct SseChunk {
 
 // --- Main chat command ---
 
+/// RAII guard to clean up cancel flag when ai_chat exits (normal, error, or panic)
+struct CancelGuard {
+    app: AppHandle,
+    session_id: String,
+}
+impl Drop for CancelGuard {
+    fn drop(&mut self) {
+        if let Some(registry) = self.app.try_state::<AiCancelRegistry>() {
+            if let Ok(mut flags) = registry.flags.lock() { flags.remove(&self.session_id); }
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn ai_chat(
     app: AppHandle,
@@ -1153,6 +1191,15 @@ pub async fn ai_chat(
     let is_deep = deep_mode.unwrap_or(false);
     let max_tool_rounds = if is_deep { 30 } else { 20 };
     app_info!("ai", "chat start: model={}, deep={}, msgs={}, url={}", config.model, is_deep, messages.len(), url);
+
+    // Register cancel flag for this session
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    {
+        let registry = app.state::<AiCancelRegistry>();
+        let mut flags = registry.flags.lock().map_err(|e| e.to_string())?;
+        flags.insert(session_id.clone(), cancel_flag.clone());
+    }
+    let _cancel_guard = CancelGuard { app: app.clone(), session_id: session_id.clone() };
 
     // Deep analysis mode prompt is now injected by the frontend (AIChatPanel.tsx)
     // to keep all prompt logic transparent and user-configurable.
@@ -1181,6 +1228,15 @@ pub async fn ai_chat(
     };
 
     for _round in 0..max_tool_rounds {
+        // Check cancel flag at start of each round
+        if cancel_flag.load(Ordering::Relaxed) {
+            let _ = app.emit("ai-stream", AiStreamEvent {
+                session_id: session_id.clone(),
+                event_type: "done".into(),
+                content: String::new(),
+            });
+            return Ok(());
+        }
         let body = serde_json::json!({
             "model": config.model,
             "messages": conversation,
@@ -1227,6 +1283,15 @@ pub async fn ai_chat(
         const MAX_SSE_BUFFER: usize = 512 * 1024; // 512KB cap for SSE buffer
 
         while let Some(chunk_result) = stream.next().await {
+            // Check cancel flag during streaming
+            if cancel_flag.load(Ordering::Relaxed) {
+                let _ = app.emit("ai-stream", AiStreamEvent {
+                    session_id: session_id.clone(),
+                    event_type: "done".into(),
+                    content: String::new(),
+                });
+                return Ok(());
+            }
             let chunk = match chunk_result {
                 Ok(c) => c,
                 Err(e) => {
@@ -1330,6 +1395,15 @@ pub async fn ai_chat(
 
             // Execute each tool and add results
             for tc in &tool_calls {
+                // Check cancel before each tool execution
+                if cancel_flag.load(Ordering::Relaxed) {
+                    let _ = app.emit("ai-stream", AiStreamEvent {
+                        session_id: session_id.clone(),
+                        event_type: "done".into(),
+                        content: String::new(),
+                    });
+                    return Ok(());
+                }
                 let _ = app.emit("ai-stream", AiStreamEvent {
                     session_id: session_id.clone(),
                     event_type: "tool_call".into(),

@@ -385,6 +385,8 @@ export async function exportFile(
   themeId: ThemeId,
   filePath: string,
   isPro: boolean = true,
+  onProgress?: (stage: string) => void,
+  signal?: AbortSignal,
 ): Promise<string> {
   if (!markdown || !markdown.trim()) {
     throw new Error('Cannot export empty document')
@@ -399,15 +401,23 @@ export async function exportFile(
   try {
     switch (format) {
       case 'HTML':
+        if (signal?.aborted) throw new Error('Export cancelled')
+        onProgress?.('Writing HTML...')
         await exportHTML(content, themeId, baseName, defaultDir + stem + '.html')
         return 'Exported as HTML'
       case 'PDF':
+        if (signal?.aborted) throw new Error('Export cancelled')
+        onProgress?.('Rendering...')
         await exportPDF(content, themeId, baseName, defaultDir + stem + '.pdf')
         return 'Exported as PDF'
       case 'DOCX':
+        if (signal?.aborted) throw new Error('Export cancelled')
+        onProgress?.('Building document...')
         await exportDOCX(content, themeId, baseName, defaultDir + stem + '.docx')
         return 'Exported as Word'
       case 'PPTX':
+        if (signal?.aborted) throw new Error('Export cancelled')
+        onProgress?.('Creating slides...')
         await exportPPTX(content, themeId, baseName, defaultDir + stem + '.pptx')
         return 'Exported as PPT'
       default:

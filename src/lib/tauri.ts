@@ -306,6 +306,10 @@ export async function aiLoadMemories(dir: string): Promise<MemoryEntry[]> {
   return invoke<MemoryEntry[]>('ai_load_memories', { dir })
 }
 
+export async function aiCancelChat(sessionId: string): Promise<void> {
+  return invoke<void>('ai_cancel_chat', { sessionId })
+}
+
 // --- Python Environment ---
 
 export interface PythonEnvStatus {

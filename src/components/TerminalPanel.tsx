@@ -15,6 +15,8 @@ interface TabInfo {
   cwd: string
   providerName?: string
   envVars?: Array<{ key: string; value: string }>
+  schemeId: string
+  panes: string[]  // dynamic 1~4, each is sessionId
 }
 
 function genId() {
@@ -32,17 +34,20 @@ function loadHeight(): number {
 
 export function TerminalPanel({ cwd, visible, onOpenSettings, onOpenLog }: TerminalPanelProps) {
   const { t } = useI18n()
-  const [tabs, setTabs] = useState<TabInfo[]>(() => [{ id: genId(), cwd }])
+  const [tabs, setTabs] = useState<TabInfo[]>(() => [{
+    id: genId(),
+    cwd,
+    schemeId: localStorage.getItem('inkess-terminal-scheme') || 'default',
+    panes: [genId()]
+  }])
   const [activeTab, setActiveTab] = useState(0)
   const [height, setHeight] = useState(loadHeight)
-  const [splitMode, setSplitMode] = useState(false)
   const [fullscreen, setFullscreen] = useState(false)
   const [providers, setProviders] = useState<TerminalProvider[]>([])
   const [selectedProvider, setSelectedProvider] = useState<string>('')
   const [showProviderMenu, setShowProviderMenu] = useState(false)
   const [showHistoryMenu, setShowHistoryMenu] = useState(false)
   const [showSchemeMenu, setShowSchemeMenu] = useState(false)
-  const [schemeId, setSchemeId] = useState(() => localStorage.getItem('inkess-terminal-scheme') || 'default')
   const [historyLogs, setHistoryLogs] = useState<TerminalLogEntry[]>([])
   const [logViewerContent, setLogViewerContent] = useState<string | null>(null)
   const [logViewerTitle, setLogViewerTitle] = useState('')
@@ -80,15 +85,20 @@ export function TerminalPanel({ cwd, visible, onOpenSettings, onOpenLog }: Termi
       cwd: cwdRef.current,
       providerName: prov?.name,
       envVars: prov?.envVars,
+      schemeId: localStorage.getItem('inkess-terminal-scheme') || 'default',
+      panes: [genId()]
     }
     setTabs(prev => [...prev, newTab])
     setActiveTab(tabs.length)
   }, [tabs.length, selectedProvider, providers])
 
   const closeTab = useCallback((idx: number) => {
-    setTabs(prev => prev.filter((_, i) => i !== idx))
-    setActiveTab(prev => Math.min(prev, tabs.length - 2))
-  }, [tabs.length])
+    setTabs(prev => {
+      const next = prev.filter((_, i) => i !== idx)
+      setActiveTab(a => Math.min(a, next.length - 1))
+      return next
+    })
+  }, [])
 
   // Switch provider: open a new terminal tab with the selected provider's env vars
   const switchProvider = useCallback((providerId: string, providersList?: TerminalProvider[]) => {
@@ -103,6 +113,8 @@ export function TerminalPanel({ cwd, visible, onOpenSettings, onOpenLog }: Termi
       cwd: cwdRef.current,
       providerName: prov.name,
       envVars: prov.envVars,
+      schemeId: localStorage.getItem('inkess-terminal-scheme') || 'default',
+      panes: [genId()]
     }
     if (tabs.length >= 5) {
       setToast(t('terminal.maxTabs'))
@@ -112,6 +124,27 @@ export function TerminalPanel({ cwd, visible, onOpenSettings, onOpenLog }: Termi
     setTabs(prev => [...prev, newTab])
     setActiveTab(tabs.length)
   }, [providers, activeTab, tabs.length])
+
+  const addPane = useCallback(() => {
+    setTabs(prev => prev.map((tab, idx) => {
+      if (idx !== activeTab || tab.panes.length >= 4) return tab
+      return { ...tab, panes: [...tab.panes, genId()] }
+    }))
+  }, [activeTab])
+
+  const removePane = useCallback((tabIdx: number, sessionId: string) => {
+    setTabs(prev => prev.map((tab, idx) => {
+      if (idx !== tabIdx || tab.panes.length <= 1) return tab
+      return { ...tab, panes: tab.panes.filter(id => id !== sessionId) }
+    }))
+  }, [])
+
+  // 配色方案切换
+  const changeScheme = useCallback((newSchemeId: string) => {
+    setTabs(prev => prev.map((tab, idx) =>
+      idx === activeTab ? { ...tab, schemeId: newSchemeId } : tab
+    ))
+  }, [activeTab])
 
   // Drag resize
   const onDragStart = useCallback((e: React.MouseEvent) => {
@@ -296,8 +329,8 @@ export function TerminalPanel({ cwd, visible, onOpenSettings, onOpenLog }: Termi
             {showSchemeMenu && (
               <div style={{ position: 'absolute', top: '100%', right: 0, zIndex: 100, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, minWidth: 150, boxShadow: '0 4px 12px rgba(0,0,0,0.15)', padding: '4px 0' }}>
                 {TERMINAL_SCHEMES.map(s => (
-                  <button key={s.id} className="dropdown-item" style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', textAlign: 'left', padding: '5px 10px', fontSize: 11, border: 'none', background: schemeId === s.id ? 'var(--bg-2)' : 'transparent', color: 'var(--text)', cursor: 'pointer' }} onClick={() => {
-                    setSchemeId(s.id)
+                  <button key={s.id} className="dropdown-item" style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', textAlign: 'left', padding: '5px 10px', fontSize: 11, border: 'none', background: tabs[activeTab]?.schemeId === s.id ? 'var(--bg-2)' : 'transparent', color: 'var(--text)', cursor: 'pointer' }} onClick={() => {
+                    changeScheme(s.id)
                     localStorage.setItem('inkess-terminal-scheme', s.id)
                     setShowSchemeMenu(false)
                   }}>
@@ -310,9 +343,11 @@ export function TerminalPanel({ cwd, visible, onOpenSettings, onOpenLog }: Termi
           </div>
           <div style={{ width: 1, height: 14, background: 'var(--border-s)', margin: '0 2px' }} />
           <button
-            className={`terminal-tab-action ${splitMode ? 'terminal-tab-action-active' : ''}`}
-            onClick={() => setSplitMode(v => !v)}
+            className={`terminal-tab-action ${(tabs[activeTab]?.panes.length || 1) > 1 ? 'terminal-tab-action-active' : ''}`}
+            onClick={addPane}
+            disabled={(tabs[activeTab]?.panes.length || 1) >= 4}
             title={t('terminal.split')}
+            style={{ opacity: (tabs[activeTab]?.panes.length || 1) >= 4 ? 0.3 : 1 }}
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5">
               <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="12" y1="3" x2="12" y2="21" />
@@ -333,30 +368,39 @@ export function TerminalPanel({ cwd, visible, onOpenSettings, onOpenLog }: Termi
           </button>
         </div>
       </div>
-      <div className="terminal-body" style={{ display: 'flex' }}>
-        {splitMode && tabs.length >= 2 ? (
-          <>
-            <div style={{ flex: 1, overflow: 'hidden' }}>
-              <TerminalTab sessionId={tabs[activeTab]?.id || ''} cwd={tabs[activeTab]?.cwd || cwd} active envVars={tabs[activeTab]?.envVars} schemeId={schemeId} />
+      <div className="terminal-body">
+        {tabs.map((tab, tabIdx) => {
+          const isActive = tabIdx === activeTab
+          return (
+            <div
+              key={tab.id}
+              style={{
+                display: isActive ? 'grid' : 'none',
+                gridTemplateColumns: '1fr 1fr',
+                height: '100%',
+                gap: tab.panes.length > 1 ? '1px' : 0,
+                background: tab.panes.length > 1 ? 'var(--border)' : 'transparent',
+              }}
+            >
+              {tab.panes.map(sessionId => (
+                <div
+                  key={sessionId}
+                  className="terminal-pane-wrapper"
+                  style={{ overflow: 'hidden', background: 'var(--bg)' }}
+                >
+                  <TerminalTab
+                    sessionId={sessionId}
+                    cwd={tab.cwd}
+                    active={isActive}
+                    envVars={tab.envVars}
+                    schemeId={tab.schemeId}
+                    onClose={tab.panes.length > 1 ? () => removePane(tabIdx, sessionId) : undefined}
+                  />
+                </div>
+              ))}
             </div>
-            <div style={{ width: 1, background: 'var(--border)' }} />
-            <div style={{ flex: 1, overflow: 'hidden' }}>
-              <TerminalTab
-                sessionId={tabs[(activeTab + 1) % tabs.length]?.id || ''}
-                cwd={tabs[(activeTab + 1) % tabs.length]?.cwd || cwd}
-                active
-                envVars={tabs[(activeTab + 1) % tabs.length]?.envVars}
-                schemeId={schemeId}
-              />
-            </div>
-          </>
-        ) : (
-          tabs.map((tab, i) => (
-            <div key={tab.id} style={{ flex: 1, overflow: 'hidden', display: i === activeTab ? 'block' : 'none' }}>
-              <TerminalTab sessionId={tab.id} cwd={tab.cwd} active={i === activeTab} envVars={tab.envVars} schemeId={schemeId} />
-            </div>
-          ))
-        )}
+          )
+        })}
       </div>
       {/* Toast */}
       {toast && (

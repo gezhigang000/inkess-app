@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { type AiConfig, type ChatMessage, type AiStreamEvent, type MemoryEntry, type PythonSetupProgress, aiLoadConfig, aiChat, aiSaveMemory, aiLoadMemories, aiSaveConfig, ragStats, type RagIndexStats, readFileLines, mcpToolLogs, type McpToolCallLog } from '../lib/tauri'
+import { type AiConfig, type ChatMessage, type AiStreamEvent, type MemoryEntry, type PythonSetupProgress, aiLoadConfig, aiChat, aiSaveMemory, aiLoadMemories, aiSaveConfig, ragStats, type RagIndexStats, readFileLines, mcpToolLogs, type McpToolCallLog, aiCancelChat } from '../lib/tauri'
 import { AIModelConfig, PRESETS } from './AIModelConfig'
 import { listen } from '@tauri-apps/api/event'
 import DOMPurify from 'dompurify'
@@ -226,6 +226,24 @@ function saveSessions(sessions: ChatSession[]) {
   } catch { /* ignore */ }
 }
 
+/** Highlight search query matches in text with <mark> tags */
+function highlightText(text: string, query: string): React.ReactNode {
+  if (!query) return text
+  const lc = text.toLowerCase()
+  const lcq = query.toLowerCase()
+  const parts: React.ReactNode[] = []
+  let last = 0
+  let idx = lc.indexOf(lcq, last)
+  while (idx !== -1) {
+    if (idx > last) parts.push(text.slice(last, idx))
+    parts.push(<mark key={idx}>{text.slice(idx, idx + query.length)}</mark>)
+    last = idx + query.length
+    idx = lc.indexOf(lcq, last)
+  }
+  if (last < text.length) parts.push(text.slice(last))
+  return parts.length > 0 ? <>{parts}</> : text
+}
+
 export function AIChatPanel({ visible, currentDir, onClose, onToast, isPro = true, onOpenLicense, onOpenFile, busyRef }: AIChatPanelProps) {
   const [messages, setMessages] = useState<UIMessage[]>(loadHistory)
   const [input, setInput] = useState('')
@@ -245,6 +263,8 @@ export function AIChatPanel({ visible, currentDir, onClose, onToast, isPro = tru
   const [hoverPreview, setHoverPreview] = useState<{ x: number; y: number; content: string; path: string; line: number } | null>(null)
   const [showToolLogs, setShowToolLogs] = useState(false)
   const [toolLogs, setToolLogs] = useState<McpToolCallLog[]>([])
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchOpen, setSearchOpen] = useState(false)
   const [expandedLogIdx, setExpandedLogIdx] = useState<number | null>(null)
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const summarizedRef = useRef(false)
@@ -570,7 +590,13 @@ export function AIChatPanel({ visible, currentDir, onClose, onToast, isPro = tru
 
   return (
     <>
-      <div className={`ai-panel ${visible ? 'ai-panel-open' : ''}`} style={{ width: panelWidth }}>
+      <div className={`ai-panel ${visible ? 'ai-panel-open' : ''}`} style={{ width: panelWidth }} onKeyDown={e => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
+          e.preventDefault()
+          e.stopPropagation()
+          setSearchOpen(v => !v)
+        }
+      }}>
         {/* Resize handle */}
         <div className="ai-panel-resize" onMouseDown={handleResizeStart} />
         {/* Header */}
@@ -753,8 +779,28 @@ export function AIChatPanel({ visible, currentDir, onClose, onToast, isPro = tru
           <UpgradePrompt feature="ai" onOpenLicense={() => onOpenLicense?.()} />
         ) : (
         <>
+        {/* Search bar */}
+        {searchOpen && (
+          <div className="ai-search-bar">
+            <input
+              autoFocus
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder={t('ai.searchMessages')}
+              onKeyDown={e => { if (e.key === 'Escape') { setSearchOpen(false); setSearchQuery('') } }}
+            />
+            <span className="ai-search-count">
+              {searchQuery ? messages.filter(m => m.content.toLowerCase().includes(searchQuery.toLowerCase())).length : 0} {t('ai.matches')}
+            </span>
+            <button onClick={() => { setSearchOpen(false); setSearchQuery('') }} aria-label={t('ai.close')}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: 12, height: 12 }}>
+                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+        )}
         {/* Messages */}
-        <div className="ai-messages">
+        <div className="ai-messages" aria-live="polite">
           {messages.length === 0 && (
             <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-3)', fontSize: 13 }}>
               {config ? t('ai.startChat') : (
@@ -764,7 +810,7 @@ export function AIChatPanel({ visible, currentDir, onClose, onToast, isPro = tru
               )}
             </div>
           )}
-          {messages.map((msg, i) => {
+          {messages.filter(msg => !searchQuery || msg.content.toLowerCase().includes(searchQuery.toLowerCase())).map((msg, i) => {
             // Format MCP tool names: mcp__{serverid}__{toolname} → serverid / toolname
             const displayToolName = msg.toolName?.startsWith('mcp__')
               ? msg.toolName.slice(5).replace('__', ' / ')
@@ -812,7 +858,11 @@ export function AIChatPanel({ visible, currentDir, onClose, onToast, isPro = tru
                 </div>
               ) : (
                 <div className={msg.role === 'user' ? 'ai-bubble ai-bubble-user' : 'ai-bubble ai-bubble-assistant'}>
-                  <MessageContent text={msg.content} onOpenFile={onOpenFile} currentDir={currentDir} hoverTimerRef={hoverTimerRef} setHoverPreview={setHoverPreview} />
+                  {msg.role === 'user' && searchQuery ? (
+                    <div style={{ whiteSpace: 'pre-wrap' }}>{highlightText(msg.content, searchQuery)}</div>
+                  ) : (
+                    <MessageContent text={msg.content} onOpenFile={onOpenFile} currentDir={currentDir} hoverTimerRef={hoverTimerRef} setHoverPreview={setHoverPreview} />
+                  )}
                 </div>
               )}
             </div>
@@ -892,16 +942,28 @@ export function AIChatPanel({ visible, currentDir, onClose, onToast, isPro = tru
             disabled={!config}
             aria-label={t('ai.title')}
           />
+          {streaming ? (
+          <button
+            className="ai-send-btn ai-stop-btn"
+            onClick={() => aiCancelChat(sessionId)}
+            aria-label={t('ai.stopGeneration')}
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" style={{ width: 14, height: 14 }}>
+              <rect x="6" y="6" width="12" height="12" rx="2" />
+            </svg>
+          </button>
+          ) : (
           <button
             className="ai-send-btn"
             onClick={handleSend}
-            disabled={streaming || !input.trim() || !config}
+            disabled={!input.trim() || !config}
             aria-label={t('ai.sendMsg')}
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: 16, height: 16 }}>
               <line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" />
             </svg>
           </button>
+          )}
         </div>
         {/* Tool logs button */}
         <div style={{ padding: '4px 12px', borderTop: '1px solid var(--border-s)', display: 'flex', justifyContent: 'flex-end' }}>
@@ -937,7 +999,7 @@ export function AIChatPanel({ visible, currentDir, onClose, onToast, isPro = tru
       {/* Tool logs panel */}
       {showToolLogs && (
         <div className="shortcuts-backdrop" onClick={() => setShowToolLogs(false)}>
-          <div className="shortcuts-modal" style={{ minWidth: 560, maxWidth: 640, maxHeight: '70vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
+          <div className="shortcuts-modal" role="dialog" aria-modal="true" style={{ minWidth: 560, maxWidth: 640, maxHeight: '70vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-1">
               <h3 style={{ margin: 0, fontSize: 14 }}>{t('mcp.toolLogs')}</h3>
               <button className="sidebar-action-btn" onClick={() => setShowToolLogs(false)} aria-label={t('ai.close')}>
@@ -977,7 +1039,7 @@ export function AIChatPanel({ visible, currentDir, onClose, onToast, isPro = tru
 
       {showHistory && (
         <div className="shortcuts-backdrop" onClick={() => setShowHistory(false)}>
-          <div className="shortcuts-modal" style={{ minWidth: 560, maxWidth: 640, maxHeight: '70vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
+          <div className="shortcuts-modal" role="dialog" aria-modal="true" style={{ minWidth: 560, maxWidth: 640, maxHeight: '70vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-1">
               <h3 style={{ margin: 0, fontSize: 14 }}>{t('ai.chatHistory')}</h3>
               <button className="sidebar-action-btn" onClick={() => setShowHistory(false)} aria-label={t('ai.close')}>

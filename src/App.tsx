@@ -3,7 +3,7 @@ import { Toolbar } from './components/Toolbar'
 import { Sidebar } from './components/Sidebar'
 import { ContentArea } from './components/ContentArea'
 import { Timeline } from './components/Timeline'
-import { Toast } from './components/Toast'
+import { Toast, type ToastItem, type ToastSeverity } from './components/Toast'
 import { NewFilePopup } from './components/NewFilePopup'
 import { ConflictDialog } from './components/ConflictDialog'
 import { TerminalPanel } from './components/TerminalPanel'
@@ -77,7 +77,6 @@ Drop files or press ⌘O to get started. Supports Markdown, text, code, images, 
 `
 
 const DEMO_CONTENT: ContentData = { type: 'markdown', text: DEMO_MARKDOWN }
-const TOAST_DURATION = 2500
 const AUTOSAVE_DELAY = 3000
 
 function loadTheme(): ThemeId {
@@ -116,7 +115,8 @@ function AppInner() {
   const [themeId, setThemeId] = useState<ThemeId>(loadTheme)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [timelineOpen, setTimelineOpen] = useState(true)
-  const [toast, setToast] = useState('')
+  const [toasts, setToasts] = useState<ToastItem[]>([])
+  const toastTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set())
   const [currentFile, setCurrentFile] = useState('')
   const [currentDir, setCurrentDir] = useState('')
   const [currentFilePath, setCurrentFilePath] = useState('')
@@ -125,9 +125,11 @@ function AppInner() {
   const [files, setFiles] = useState<FileEntry[]>([])
   const [snapshots, setSnapshots] = useState<SnapshotInfo[]>([])
   const [activeSnapshotId, setActiveSnapshotId] = useState<number | null>(null)
-  const [editing, setEditing] = useState(false)
+  const [viewMode, setViewMode] = useState<'preview' | 'edit' | 'split'>('preview')
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [exportProgress, setExportProgress] = useState('')
+  const exportAbortRef = useRef<AbortController | null>(null)
   const [dragging, setDragging] = useState(false)
   const [isReadOnly, setIsReadOnly] = useState(false)
   const [newFilePopup, setNewFilePopup] = useState<'file' | 'folder' | null>(null)
@@ -150,7 +152,6 @@ function AppInner() {
   const [showAbout, setShowAbout] = useState(false)
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const dragCountRef = useRef(0)
   const openRequestRef = useRef(0)
   const openFileRef = useRef<(path: string) => Promise<void>>(null!)
@@ -164,6 +165,7 @@ function AppInner() {
   const [, startTransition] = useTransition()
   const prevBlobUrlRef = useRef<string | null>(null)
   const isDark = themeId === 'dark'
+  const editing = viewMode !== 'preview'
   const isViewingHistory = activeSnapshotId !== null
   const currentFileType = currentFile ? getFileType(currentFile) : 'markdown'
   const canEdit = isEditable(currentFileType) && !isReadOnly
@@ -171,10 +173,35 @@ function AppInner() {
   const canExport = currentFileType === 'markdown'
   const isHtmlPreview = currentFileType === 'html' && !editing
 
-  const showToast = useCallback((msg: string, duration = TOAST_DURATION) => {
-    setToast(msg)
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
-    toastTimerRef.current = setTimeout(() => setToast(''), duration)
+  const showToast = useCallback((msg: string, severity: ToastSeverity = 'info', duration?: number) => {
+    const id = crypto.randomUUID()
+    const dur = duration ?? (severity === 'error' ? 5000 : 2500)
+    setToasts(prev => [...prev, { id, message: msg, severity }])
+    const timer = setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id))
+      toastTimersRef.current.delete(timer)
+    }, dur)
+    toastTimersRef.current.add(timer)
+  }, [])
+
+  const dismissToast = useCallback((id: string) => {
+    setToasts(prev => prev.filter(t => t.id !== id))
+  }, [])
+
+  // Cleanup toast timers on unmount
+  useEffect(() => {
+    return () => { toastTimersRef.current.forEach(t => clearTimeout(t)) }
+  }, [])
+
+  // Auto-collapse split view on narrow windows
+  useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth < 700) {
+        setViewMode(v => v === 'split' ? 'edit' : v)
+      }
+    }
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
   }, [])
 
   // Keep refs in sync
@@ -280,9 +307,9 @@ function AppInner() {
     try {
       await createFile(currentDir + '/' + name, template || '')
       await refreshFiles()
-      showToast(t('toast.created', { name }))
+      showToast(t('toast.created', { name }), 'success')
     } catch (e) {
-      showToast(typeof e === 'string' ? e : t('toast.createFailed'))
+      showToast(typeof e === 'string' ? e : t('toast.createFailed'), 'error')
     }
     setNewFilePopup(null)
   }, [currentDir, refreshFiles, showToast, t])
@@ -292,9 +319,9 @@ function AppInner() {
     try {
       await createDirectory(currentDir + '/' + name)
       await refreshFiles()
-      showToast(t('toast.createdFolder', { name }))
+      showToast(t('toast.createdFolder', { name }), 'success')
     } catch (e) {
-      showToast(typeof e === 'string' ? e : t('toast.createFailed'))
+      showToast(typeof e === 'string' ? e : t('toast.createFailed'), 'error')
     }
     setNewFilePopup(null)
   }, [currentDir, refreshFiles, showToast, t])
@@ -309,9 +336,9 @@ function AppInner() {
       await refreshFiles()
       const oldName = oldRelPath.split('/').pop()!
       if (currentFile === oldName) setCurrentFile(newName)
-      showToast(t('toast.renamed'))
+      showToast(t('toast.renamed'), 'success')
     } catch (e) {
-      showToast(typeof e === 'string' ? e : t('toast.renameFailed'))
+      showToast(typeof e === 'string' ? e : t('toast.renameFailed'), 'error')
     }
   }, [currentDir, currentFile, refreshFiles, showToast, t])
 
@@ -320,15 +347,15 @@ function AppInner() {
     try {
       await deleteToTrash(currentDir + '/' + name)
       await refreshFiles()
-      showToast(t('toast.movedToTrash'))
+      showToast(t('toast.movedToTrash'), 'success')
     } catch (e) {
-      showToast(typeof e === 'string' ? e : t('toast.deleteFailed'))
+      showToast(typeof e === 'string' ? e : t('toast.deleteFailed'), 'error')
     }
   }, [currentDir, refreshFiles, showToast, t])
 
   const handleCopyPath = useCallback((name: string) => {
     if (!currentDir) return
-    navigator.clipboard.writeText(currentDir + '/' + name).then(() => showToast(t('toast.copiedPath')))
+    navigator.clipboard.writeText(currentDir + '/' + name).then(() => showToast(t('toast.copiedPath'), 'success'))
   }, [currentDir, showToast, t])
 
   const toggleDevMode = useCallback(() => {
@@ -375,14 +402,14 @@ function AppInner() {
     try {
       await gitInit(targetDir)
       setIsGitRepo(true)
-      showToast(t('toast.gitInited'))
+      showToast(t('toast.gitInited'), 'success')
       // Refresh git status
       const s = await gitStatus(currentDir || targetDir)
       setIsGitRepo(s.is_repo)
       setGitBranch(s.branch || '')
       setGitChangedCount(s.files?.length || 0)
     } catch (e) {
-      showToast(typeof e === 'string' ? e : t('toast.gitInitFailed'))
+      showToast(typeof e === 'string' ? e : t('toast.gitInitFailed'), 'error')
     }
   }, [gitInitConfirm, currentDir, showToast, t])
 
@@ -397,9 +424,9 @@ function AppInner() {
         await createSnapshot(currentFilePath, text).catch(() => {})
         await refreshSnapshots(currentFilePath)
       }
-      showToast(t('toast.saved'))
+      showToast(t('toast.saved'), 'success')
     } catch {
-      showToast(t('toast.saveFailed'), 4000)
+      showToast(t('toast.saveFailed'), 'error', 4000)
     }
   }, [currentFilePath, content, hasUnsavedChanges, canEdit, canSnapshot, showToast, refreshSnapshots, t])
 
@@ -415,7 +442,7 @@ function AppInner() {
         await saveFile(currentFilePath, prevText)
         await createSnapshot(currentFilePath, prevText).catch(() => {})
       } catch {
-        showToast(t('toast.autoSaveFailed'))
+        showToast(t('toast.autoSaveFailed'), 'error')
       }
     }
     const reqId = ++openRequestRef.current
@@ -496,7 +523,7 @@ function AppInner() {
             const text = await readFile(filePath)
             newContent = { type: 'text', text }
           } catch {
-            showToast(t('toast.unsupported'))
+            showToast(t('toast.unsupported'), 'warning')
             setLoading(false)
             return
           }
@@ -508,7 +535,7 @@ function AppInner() {
       setContent(newContent)
       if ('text' in newContent) setLatestText(newContent.text)
       setActiveSnapshotId(null)
-      setEditing(false)
+      setViewMode('preview')
       setHasUnsavedChanges(false)
       setIsReadOnly(false)
       setCurrentFile(fileName)
@@ -528,7 +555,7 @@ function AppInner() {
       }
     } catch (err) {
       if (reqId !== openRequestRef.current) return
-      showToast(t('toast.openFailed'), 4000)
+      showToast(t('toast.openFailed'), 'error', 4000)
     } finally {
       if (reqId === openRequestRef.current) setLoading(false)
     }
@@ -569,9 +596,9 @@ function AppInner() {
       else if (ft === 'code') setContent({ type: 'code', text, language: getLanguage(currentFile) || 'plaintext' })
       else if (ft === 'html') setContent({ type: 'html', text })
       else setContent({ type: 'text', text })
-      setEditing(false)
+      setViewMode('preview')
     } catch {
-      showToast(t('toast.loadHistoryFailed'))
+      showToast(t('toast.loadHistoryFailed'), 'error')
     }
   }, [latestText, currentFile, showToast, t])
 
@@ -604,10 +631,10 @@ function AppInner() {
   const toggleEdit = useCallback(() => {
     if (isViewingHistory || !canEdit) return
     if (!currentFilePath && !editing) {
-      showToast(t('toast.openFirst'))
+      showToast(t('toast.openFirst'), 'warning')
       return
     }
-    setEditing(v => !v)
+    setViewMode(v => v === 'preview' ? 'edit' : v === 'edit' ? 'split' : 'preview')
   }, [isViewingHistory, canEdit, currentFilePath, editing, showToast, t])
 
   const handleOpen = useCallback(async () => {
@@ -696,14 +723,14 @@ function AppInner() {
             }
             setCurrentFile(file.name)
             setActiveSnapshotId(null)
-            setEditing(false)
+            setViewMode('preview')
             setHasUnsavedChanges(false)
             setCurrentFilePath('')
             setIsReadOnly(true)
             setSnapshots([])
-            showToast(t('toast.opened', { name: file.name }))
+            showToast(t('toast.opened', { name: file.name }), 'success')
           } catch {
-            showToast(t('toast.readFailed'))
+            showToast(t('toast.readFailed'), 'error')
           }
       }
     }
@@ -723,7 +750,6 @@ function AppInner() {
   useEffect(() => {
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
-      if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
       if (prevBlobUrlRef.current) URL.revokeObjectURL(prevBlobUrlRef.current)
     }
   }, [])
@@ -811,15 +837,20 @@ function AppInner() {
         if (canExport) {
           const text = getContentText(content)
           setLoading(true)
-          exportFile('PDF', text, themeId, currentFilePath || currentFile || 'document', isPro)
-            .then(msg => showToast(msg))
-            .catch(() => showToast(t('toast.exportFailed')))
-            .finally(() => setLoading(false))
+          const ac = new AbortController()
+          exportAbortRef.current = ac
+          exportFile('PDF', text, themeId, currentFilePath || currentFile || 'document', isPro, stage => setExportProgress(stage), ac.signal)
+            .then(msg => showToast(msg, 'success'))
+            .catch(e => {
+              if (e instanceof Error && e.message === 'Export cancelled') showToast(t('toast.exportCancelled'), 'warning')
+              else showToast(t('toast.exportFailed'), 'error')
+            })
+            .finally(() => { setLoading(false); setExportProgress(''); exportAbortRef.current = null })
         } else {
-          showToast(t('toast.exportNotSupported'))
+          showToast(t('toast.exportNotSupported'), 'warning')
         }
       } else if (e.key === 'Escape' && editing) {
-        setEditing(false)
+        setViewMode('preview')
       } else if (mod && key === 'd') {
         e.preventDefault()
         toggleDevMode()
@@ -845,24 +876,30 @@ function AppInner() {
         currentFilePath={currentFilePath}
         onExport={async (fmt) => {
           if (!canExport) {
-            showToast(t('toast.exportNotSupported'))
+            showToast(t('toast.exportNotSupported'), 'warning')
             return
           }
           setLoading(true)
+          const ac = new AbortController()
+          exportAbortRef.current = ac
           try {
             const text = getContentText(content)
-            const msg = await exportFile(fmt, text, themeId, currentFilePath || currentFile || 'document', isPro)
-            showToast(msg)
-          } catch {
-            showToast(t('toast.exportFailed'))
+            const msg = await exportFile(fmt, text, themeId, currentFilePath || currentFile || 'document', isPro, stage => setExportProgress(stage), ac.signal)
+            showToast(msg, 'success')
+          } catch (e) {
+            if (e instanceof Error && e.message === 'Export cancelled') showToast(t('toast.exportCancelled'), 'warning')
+            else showToast(t('toast.exportFailed'), 'error')
           } finally {
             setLoading(false)
+            setExportProgress('')
+            exportAbortRef.current = null
           }
         }}
         onNavigateDir={handleNavigateDir}
         isViewingHistory={isViewingHistory}
         onBackToLatest={() => handleSelectSnapshot(null)}
         isEditing={editing}
+        viewMode={viewMode}
         onToggleEdit={toggleEdit}
         hasUnsavedChanges={hasUnsavedChanges}
         onOpenFile={handleOpen}
@@ -880,7 +917,7 @@ function AppInner() {
         isPro={isPro}
         onOpenLicense={() => setLicensePanelOpen(true)}
       />
-      <div className="flex flex-1 overflow-hidden" style={{ paddingTop: 52 }}>
+      <div role="main" className="flex flex-1 overflow-hidden" style={{ paddingTop: 52 }}>
         {!currentFilePath && !currentDir ? (
           <WelcomeScreen recentDirs={recentDirs} onOpenDir={handleNavigateDir} onOpen={handleOpen} />
         ) : (
@@ -911,7 +948,7 @@ function AppInner() {
                 setCurrentFile('')
                 setCurrentFilePath('')
                 setContent({ type: 'markdown', text: '' })
-                showToast(t('toast.workspaceSwitched', { dir: dirName }))
+                showToast(t('toast.workspaceSwitched', { dir: dirName }), 'success')
               }
               if (aiPanelOpen && aiBusyRef.current) {
                 if (window.confirm(t('toast.switchDirConfirm', { dir: dirName }))) {
@@ -927,6 +964,12 @@ function AppInner() {
           {loading && (
             <div className="loading-overlay">
               <div className="loading-spinner" />
+              {exportProgress && (
+                <div className="export-progress">
+                  <span>{exportProgress}</span>
+                  <button className="toolbar-btn" onClick={() => exportAbortRef.current?.abort()}>{t('export.cancel')}</button>
+                </div>
+              )}
             </div>
           )}
           <FindBar visible={findBarOpen} onClose={() => setFindBarOpen(false)} />
@@ -934,17 +977,23 @@ function AppInner() {
             content={content}
             themeId={themeId}
             editing={editing}
+            viewMode={viewMode}
             onEdit={handleEdit}
             currentFilePath={currentFilePath}
             onExport={async (fmt) => {
-              if (!canExport) { showToast(t('toast.exportNotSupported')); return }
+              if (!canExport) { showToast(t('toast.exportNotSupported'), 'warning'); return }
               setLoading(true)
+              const ac = new AbortController()
+              exportAbortRef.current = ac
               try {
                 const text = getContentText(content)
-                const msg = await exportFile(fmt, text, themeId, currentFilePath || currentFile || 'document', isPro)
-                showToast(msg)
-              } catch { showToast(t('toast.exportFailed')) }
-              finally { setLoading(false) }
+                const msg = await exportFile(fmt, text, themeId, currentFilePath || currentFile || 'document', isPro, stage => setExportProgress(stage), ac.signal)
+                showToast(msg, 'success')
+              } catch (e) {
+                if (e instanceof Error && e.message === 'Export cancelled') showToast(t('toast.exportCancelled'), 'warning')
+                else showToast(t('toast.exportFailed'), 'error')
+              }
+              finally { setLoading(false); setExportProgress(''); exportAbortRef.current = null }
             }}
             onToggleEdit={toggleEdit}
             canExport={canExport}
@@ -975,7 +1024,7 @@ function AppInner() {
                 setContent({ type: 'code', text: logContent, language: 'log' })
                 setCurrentFile('terminal-session.log')
                 setCurrentFilePath('')
-                setEditing(false)
+                setViewMode('preview')
               }}
             />
           )}
@@ -988,7 +1037,7 @@ function AppInner() {
           <div className="drag-overlay-text">{t('toast.dragHint')}</div>
         </div>
       )}
-      <Toast message={toast} />
+      <Toast toasts={toasts} onDismiss={dismissToast} />
       {devMode && <DevConsole visible={devConsoleOpen} onClose={() => setDevConsoleOpen(false)} />}
       {newFilePopup && (
         <NewFilePopup
@@ -1014,7 +1063,7 @@ function AppInner() {
                 else setContent({ type: 'text', text })
                 setLatestText(text)
                 setHasUnsavedChanges(false)
-              }).catch(() => showToast(t('toast.loadExternalFailed')))
+              }).catch(() => showToast(t('toast.loadExternalFailed'), 'error'))
             }
           }}
           onDismiss={() => setConflictFile(null)}
@@ -1042,7 +1091,7 @@ function AppInner() {
       />
       {gitInitConfirm && (
         <div className="shortcuts-backdrop" onClick={() => setGitInitConfirm(null)}>
-          <div className="shortcuts-modal" onClick={e => e.stopPropagation()} style={{ minWidth: 320 }}>
+          <div className="shortcuts-modal" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} style={{ minWidth: 320 }}>
             <div className="flex items-center justify-between mb-1">
               <h3 style={{ margin: 0 }}>{t('gitInit.title')}</h3>
               <button className="sidebar-action-btn" onClick={() => setGitInitConfirm(null)} aria-label={t('ai.close')}>
@@ -1064,7 +1113,7 @@ function AppInner() {
       )}
       {showAbout && (
         <div className="shortcuts-backdrop" onClick={() => setShowAbout(false)}>
-          <div className="shortcuts-modal" onClick={e => e.stopPropagation()} style={{ minWidth: 380, maxWidth: 440 }}>
+          <div className="shortcuts-modal" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} style={{ minWidth: 380, maxWidth: 440 }}>
             <div className="flex items-center justify-between mb-1">
               <h3 style={{ margin: 0 }}>{t('about.title')}</h3>
               <button className="sidebar-action-btn" onClick={() => setShowAbout(false)} aria-label={t('ai.close')}>

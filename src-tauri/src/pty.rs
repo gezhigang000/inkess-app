@@ -9,7 +9,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::session_logger::{SessionLogger, SharedLogger};
 
-const MAX_SESSIONS: usize = 5;
+const MAX_SESSIONS: usize = 20;
 
 const BLOCKED_ENV_VARS: &[&str] = &[
     "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES",
@@ -84,10 +84,18 @@ pub fn pty_spawn(
     };
     safe_eprintln!("[pty] shell={}", shell);
     let mut cmd = CommandBuilder::new(&shell);
+    if !cfg!(target_os = "windows") {
+        cmd.arg("-l");
+    }
     cmd.cwd(&cwd);
     // Pass through common env vars
     if !cfg!(target_os = "windows") {
         cmd.env("TERM", "xterm-256color");
+        // Ensure UTF-8 locale for CJK support — production builds launched from
+        // Finder don't inherit the shell's LANG, causing Chinese to show as '?'
+        if std::env::var("LANG").unwrap_or_default().is_empty() {
+            cmd.env("LANG", "en_US.UTF-8");
+        }
     }
     // Inject user-provided environment variables (with security validation)
     if let Some(vars) = &env_vars {
