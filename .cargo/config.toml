@@ -1,9 +1,5 @@
 # Fix Windows CRT mismatch: ort-sys pre-built binaries use /MD (dynamic CRT),
-# but Rust MSVC defaults to /MT (static CRT). Switch to dynamic CRT to match,
-# and force linker to ignore conflicting static C/C++ runtime libs.
+# but Rust MSVC defaults to /MT (static CRT). Force dynamic CRT for Rust code.
+# C/C++ code (esaxx-rs etc.) also needs /MD — set via CFLAGS/CXXFLAGS in CI.
 [target.x86_64-pc-windows-msvc]
-rustflags = [
-  "-C", "target-feature=-crt-static",
-  "-C", "link-arg=/NODEFAULTLIB:libcmt.lib",
-  "-C", "link-arg=/NODEFAULTLIB:libcpmt.lib",
-]
+rustflags = ["-C", "target-feature=-crt-static"]

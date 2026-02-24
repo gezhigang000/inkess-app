@@ -83,6 +83,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # Force dynamic CRT (/MD) for C/C++ deps on Windows to match ort-sys pre-built binaries
+          CFLAGS: ${{ runner.os == 'Windows' && '/MD' || '' }}
+          CXXFLAGS: ${{ runner.os == 'Windows' && '/MD' || '' }}
         with:
           tauriScript: npm run tauri
           args: --target ${{ matrix.target }}
