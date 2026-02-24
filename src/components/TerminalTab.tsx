@@ -108,6 +108,7 @@ export function TerminalTab({ sessionId, cwd, active, envVars, schemeId = 'defau
       fontSize: 13,
       fontFamily: "'JetBrains Mono', 'Menlo', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', monospace",
       cursorBlink: true,
+      scrollback: 5000,
       theme,
       allowProposedApi: true,
     })
@@ -138,18 +139,39 @@ export function TerminalTab({ sessionId, cwd, active, envVars, schemeId = 'defau
       term.writeln(`\r\n\x1b[31mTerminal start failed: ${e}\x1b[0m`)
     })
 
+    // Buffered write: batch PTY output via RAF to prevent UI blocking on rapid output
+    let writeBuffer: Uint8Array[] = []
+    let rafId = 0
+    const flushBuffer = () => {
+      rafId = 0
+      if (writeBuffer.length === 0) return
+      const chunks = writeBuffer
+      writeBuffer = []
+      // Merge chunks into a single write for efficiency
+      const total = chunks.reduce((s, c) => s + c.length, 0)
+      const merged = new Uint8Array(total)
+      let offset = 0
+      for (const c of chunks) {
+        merged.set(c, offset)
+        offset += c.length
+      }
+      term.write(merged)
+    }
+
     // Listen for PTY data
     let unlistenData: (() => void) | undefined
     let unlistenExit: (() => void) | undefined
 
     listen<{ session_id: string; data: number[] }>('pty-data', (event) => {
       if (event.payload.session_id === sessionId) {
-        term.write(new Uint8Array(event.payload.data))
+        writeBuffer.push(new Uint8Array(event.payload.data))
+        if (!rafId) rafId = requestAnimationFrame(flushBuffer)
       }
     }).then(fn => { unlistenData = fn })
 
     listen<{ session_id: string }>('pty-exit', (event) => {
       if (event.payload.session_id === sessionId) {
+        flushBuffer() // flush remaining output before exit message
         term.writeln('\r\n\x1b[90m[Process exited]\x1b[0m')
       }
     }).then(fn => { unlistenExit = fn })
@@ -173,6 +195,7 @@ export function TerminalTab({ sessionId, cwd, active, envVars, schemeId = 'defau
     ro.observe(containerRef.current)
 
     return () => {
+      if (rafId) cancelAnimationFrame(rafId)
       onData.dispose()
       ro.disconnect()
       unlistenData?.()
