@@ -14,6 +14,7 @@ on:
         options:
           - all
           - macos-only
+          - macos-intel-only
           - windows-only
 
 jobs:
@@ -26,10 +27,12 @@ jobs:
         run: |
           if [[ "${{ github.event.inputs.platform }}" == "macos-only" ]]; then
             echo 'matrix={"include":[{"platform":"macos-latest","target":"aarch64-apple-darwin","label":"macOS-arm64"}]}' >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event.inputs.platform }}" == "macos-intel-only" ]]; then
+            echo 'matrix={"include":[{"platform":"macos-15-intel","target":"x86_64-apple-darwin","label":"macOS-x64"}]}' >> $GITHUB_OUTPUT
           elif [[ "${{ github.event.inputs.platform }}" == "windows-only" ]]; then
             echo 'matrix={"include":[{"platform":"windows-latest","target":"x86_64-pc-windows-msvc","label":"Windows-x64"}]}' >> $GITHUB_OUTPUT
           else
-            echo 'matrix={"include":[{"platform":"macos-latest","target":"aarch64-apple-darwin","label":"macOS-arm64"},{"platform":"windows-latest","target":"x86_64-pc-windows-msvc","label":"Windows-x64"}]}' >> $GITHUB_OUTPUT
+            echo 'matrix={"include":[{"platform":"macos-latest","target":"aarch64-apple-darwin","label":"macOS-arm64"},{"platform":"macos-15-intel","target":"x86_64-apple-darwin","label":"macOS-x64"},{"platform":"windows-latest","target":"x86_64-pc-windows-msvc","label":"Windows-x64"}]}' >> $GITHUB_OUTPUT
           fi
 
   build:
@@ -136,3 +139,182 @@ jobs:
         with:
           files: artifacts/**/*
           generate_release_notes: true
+
+  upload-oss:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Install aliyun-cli
+        run: |
+          curl -sSL https://aliyuncli.alicdn.com/aliyun-cli-linux-latest-amd64.tgz | tar xz
+          sudo mv aliyun /usr/local/bin/
+          aliyun configure set \
+            --profile default \
+            --mode AK \
+            --region cn-beijing \
+            --access-key-id "${{ secrets.ALIYUN_ACCESS_KEY_ID }}" \
+            --access-key-secret "${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}"
+
+      - name: Upload to Aliyun OSS
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          BUCKET="oss://inkess-install-file"
+          ENDPOINT="oss-cn-beijing.aliyuncs.com"
+
+          # Upload macOS ARM64 DMG
+          ARM_DMG=$(find artifacts/Inkess-macOS-arm64 -name "*.dmg" 2>/dev/null | head -1)
+          if [ -n "$ARM_DMG" ]; then
+            aliyun oss cp "$ARM_DMG" "${BUCKET}/Inkess-macOS-arm64.dmg" -e "$ENDPOINT" -f
+            aliyun oss cp "$ARM_DMG" "${BUCKET}/${TAG}/Inkess-macOS-arm64.dmg" -e "$ENDPOINT" -f
+            echo "Uploaded ARM64 DMG: $ARM_DMG"
+          fi
+
+          # Upload macOS Intel DMG
+          INTEL_DMG=$(find artifacts/Inkess-macOS-x64 -name "*.dmg" 2>/dev/null | head -1)
+          if [ -n "$INTEL_DMG" ]; then
+            aliyun oss cp "$INTEL_DMG" "${BUCKET}/Inkess-macOS-x64.dmg" -e "$ENDPOINT" -f
+            aliyun oss cp "$INTEL_DMG" "${BUCKET}/${TAG}/Inkess-macOS-x64.dmg" -e "$ENDPOINT" -f
+            echo "Uploaded Intel DMG: $INTEL_DMG"
+          fi
+
+          # Upload Windows EXE (NSIS)
+          WIN_EXE=$(find artifacts/Inkess-Windows-x64 -name "*.exe" 2>/dev/null | head -1)
+          if [ -n "$WIN_EXE" ]; then
+            aliyun oss cp "$WIN_EXE" "${BUCKET}/Inkess-Windows-x64.exe" -e "$ENDPOINT" -f
+            aliyun oss cp "$WIN_EXE" "${BUCKET}/${TAG}/Inkess-Windows-x64.exe" -e "$ENDPOINT" -f
+            echo "Uploaded Windows EXE: $WIN_EXE"
+          fi
+
+          echo "OSS upload complete. Files available at https://download.starapp.net/"
+
+  update-homebrew:
+    needs: upload-oss
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update Homebrew Cask
+        env:
+          HOMEBREW_TAP_PAT: ${{ secrets.HOMEBREW_TAP_PAT }}
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          VERSION="${TAG#v}"
+          OSS_BASE="https://download.starapp.net"
+
+          # Download DMGs from OSS and compute SHA256
+          ARM_SHA256=""
+          INTEL_SHA256=""
+
+          if curl -sSf -o /tmp/inkess-arm64.dmg "${OSS_BASE}/Inkess-macOS-arm64.dmg"; then
+            ARM_SHA256=$(sha256sum /tmp/inkess-arm64.dmg | cut -d' ' -f1)
+            echo "ARM64 SHA256: $ARM_SHA256"
+          fi
+
+          if curl -sSf -o /tmp/inkess-x64.dmg "${OSS_BASE}/Inkess-macOS-x64.dmg"; then
+            INTEL_SHA256=$(sha256sum /tmp/inkess-x64.dmg | cut -d' ' -f1)
+            echo "Intel SHA256: $INTEL_SHA256"
+          fi
+
+          if [ -z "$ARM_SHA256" ] && [ -z "$INTEL_SHA256" ]; then
+            echo "No DMG found on OSS, skipping"
+            exit 0
+          fi
+
+          # Clone homebrew tap
+          git clone "https://x-access-token:${HOMEBREW_TAP_PAT}@github.com/gezhigang000/homebrew-inkess.git" /tmp/homebrew-inkess
+          cd /tmp/homebrew-inkess
+
+          # Generate cask based on available architectures
+          if [ -n "$ARM_SHA256" ] && [ -n "$INTEL_SHA256" ]; then
+            # Both architectures available — multi-arch cask
+            cat > Casks/inkess.rb <<CASK
+          cask "inkess" do
+            version "${VERSION}"
+
+            on_arm do
+              sha256 "${ARM_SHA256}"
+              url "${OSS_BASE}/Inkess-macOS-arm64.dmg"
+            end
+
+            on_intel do
+              sha256 "${INTEL_SHA256}"
+              url "${OSS_BASE}/Inkess-macOS-x64.dmg"
+            end
+
+            name "Inkess"
+            desc "Markdown Reader & Editor with AI Assistant"
+            homepage "https://github.com/gezhigang000/inkess-app"
+
+            depends_on macos: ">= :big_sur"
+
+            app "Inkess.app"
+
+            zap trash: [
+              "~/.local/share/inkess",
+              "~/Library/Preferences/com.inkess.app.plist",
+              "~/Library/Saved Application State/com.inkess.app.savedState",
+            ]
+          end
+          CASK
+          elif [ -n "$ARM_SHA256" ]; then
+            # ARM64 only — fallback single-arch cask
+            cat > Casks/inkess.rb <<CASK
+          cask "inkess" do
+            version "${VERSION}"
+            sha256 "${ARM_SHA256}"
+
+            url "${OSS_BASE}/Inkess-macOS-arm64.dmg"
+            name "Inkess"
+            desc "Markdown Reader & Editor with AI Assistant"
+            homepage "https://github.com/gezhigang000/inkess-app"
+
+            depends_on macos: ">= :big_sur"
+            depends_on arch: :arm64
+
+            app "Inkess.app"
+
+            zap trash: [
+              "~/.local/share/inkess",
+              "~/Library/Preferences/com.inkess.app.plist",
+              "~/Library/Saved Application State/com.inkess.app.savedState",
+            ]
+          end
+          CASK
+          else
+            # Intel only — fallback single-arch cask
+            cat > Casks/inkess.rb <<CASK
+          cask "inkess" do
+            version "${VERSION}"
+            sha256 "${INTEL_SHA256}"
+
+            url "${OSS_BASE}/Inkess-macOS-x64.dmg"
+            name "Inkess"
+            desc "Markdown Reader & Editor with AI Assistant"
+            homepage "https://github.com/gezhigang000/inkess-app"
+
+            depends_on macos: ">= :big_sur"
+            depends_on arch: :intel
+
+            app "Inkess.app"
+
+            zap trash: [
+              "~/.local/share/inkess",
+              "~/Library/Preferences/com.inkess.app.plist",
+              "~/Library/Saved Application State/com.inkess.app.savedState",
+            ]
+          end
+          CASK
+          fi
+          sed -i 's/^          //' Casks/inkess.rb
+
+          # Commit and push
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "Update Inkess to ${TAG}"
+          git push origin main
