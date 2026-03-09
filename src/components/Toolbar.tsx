@@ -41,7 +41,10 @@ export function Toolbar({
   const [exportOpen, setExportOpen] = useState(false)
   const exportRef = useRef<HTMLDivElement>(null)
 
-  const dirParts = currentDir ? currentDir.split('/').filter(Boolean) : []
+  // Normalize Windows backslashes for path splitting; detect Windows drive prefix
+  const normalizedDir = currentDir ? currentDir.replace(/\\/g, '/') : ''
+  const isWindows = /^[A-Z]:/i.test(normalizedDir)
+  const dirParts = normalizedDir ? normalizedDir.split('/').filter(Boolean) : []
   const breadcrumbParts = dirParts.slice(-3)
   const breadcrumbOffset = dirParts.length - breadcrumbParts.length
 
@@ -87,7 +90,7 @@ export function Toolbar({
       <div className="w-px h-5 mx-2" style={{ background: 'var(--border)' }} />
       <div className="flex items-center gap-0.5 text-[13px]" style={{ color: 'var(--text-2)' }}>
         {breadcrumbParts.map((part, i) => {
-          const fullPath = '/' + dirParts.slice(0, breadcrumbOffset + i + 1).join('/')
+          const fullPath = (isWindows ? '' : '/') + dirParts.slice(0, breadcrumbOffset + i + 1).join('/')
           return (
             <span key={i} className="flex items-center gap-0.5">
               <span

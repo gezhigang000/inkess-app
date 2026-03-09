@@ -2,9 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use chrono::Utc;
 use encoding_rs::{GBK, UTF_8};
-use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use tauri::Emitter;
 
@@ -19,7 +17,7 @@ macro_rules! safe_eprintln {
 }
 
 pub mod debug_log;
-pub mod session_logger;
+mod terminal;
 
 /// Get the local data directory without using the `dirs` crate.
 /// The `dirs` crate uses NSSearchPathForDirectoriesInDomains on macOS which can
@@ -69,41 +67,28 @@ extern crate objc;
 
 mod fileops;
 mod watcher;
-mod pty;
 mod git;
 mod ai;
 mod license;
 mod python_setup;
-mod rag;
 mod mcp;
+mod bm25;
 
 const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB
 
-// --- Database state ---
+// --- Snapshot file storage ---
 
-struct DbState(Mutex<Connection>);
-
-fn get_db_path() -> PathBuf {
+fn snapshots_dir() -> PathBuf {
     let data_dir = app_data_dir();
-    let app_dir = data_dir.join("inkess");
-    fs::create_dir_all(&app_dir).ok();
-    app_dir.join("snapshots.db")
+    let dir = data_dir.join("inkess").join("snapshots");
+    fs::create_dir_all(&dir).ok();
+    dir
 }
 
-fn init_db(conn: &Connection) -> Result<(), String> {
-    conn.execute_batch("PRAGMA journal_mode=WAL;")
-        .map_err(|e| format!("Failed to enable WAL mode: {}", e))?;
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            file_path TEXT NOT NULL,
-            content TEXT NOT NULL,
-            content_hash TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_snapshots_file
-            ON snapshots(file_path, created_at DESC);"
-    ).map_err(|e| format!("Database initialization failed: {}", e))
+fn path_hash(file_path: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(file_path.as_bytes());
+    format!("{:x}", hasher.finalize())[..12].to_string()
 }
 
 // --- Path validation ---
@@ -596,15 +581,11 @@ fn write_file(path: String, contents: Vec<u8>) -> Result<(), String> {
 fn content_hash(content: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
-    format!("{:x}", hasher.finalize())
+    format!("{:x}", hasher.finalize())[..8].to_string()
 }
 
 #[tauri::command]
-fn create_snapshot(
-    state: tauri::State<'_, DbState>,
-    file_path: String,
-    content: String,
-) -> Result<bool, String> {
+fn create_snapshot(file_path: String, content: String) -> Result<bool, String> {
     let canonical = validate_path(&file_path)?;
     let file_path_str = canonical.to_string_lossy().to_string();
 
@@ -612,61 +593,92 @@ fn create_snapshot(
         return Err("File too large for snapshot".to_string());
     }
 
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
     let hash = content_hash(&content);
+    let dir = snapshots_dir().join(path_hash(&file_path_str));
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create snapshot dir: {}", e))?;
 
-    let last_hash: Option<String> = conn
-        .query_row(
-            "SELECT content_hash FROM snapshots WHERE file_path = ?1 ORDER BY created_at DESC LIMIT 1",
-            [&file_path_str], |row| row.get(0),
-        ).ok();
+    // Dedup: check if latest snapshot has same content hash
+    if let Ok(entries) = fs::read_dir(&dir) {
+        let mut names: Vec<String> = entries
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| n.ends_with(".snap"))
+            .collect();
+        names.sort();
+        if let Some(last) = names.last() {
+            if last.contains(&format!("_{hash}.snap")) {
+                return Ok(false);
+            }
+        }
+    }
 
-    if last_hash.as_deref() == Some(&hash) { return Ok(false); }
+    let now = chrono::Utc::now().format("%Y%m%dT%H%M%S").to_string();
+    let filename = format!("{}_{}.snap", now, hash);
+    fs::write(dir.join(&filename), &content)
+        .map_err(|e| format!("Failed to write snapshot: {}", e))?;
 
-    let now = Utc::now().to_rfc3339();
-    conn.execute(
-        "INSERT INTO snapshots (file_path, content, content_hash, created_at) VALUES (?1, ?2, ?3, ?4)",
-        (&file_path_str, &content, &hash, &now),
-    ).map_err(|e| format!("Failed to create snapshot: {}", e))?;
-
-    conn.execute(
-        "DELETE FROM snapshots WHERE file_path = ?1 AND id NOT IN (SELECT id FROM snapshots WHERE file_path = ?1 ORDER BY created_at DESC LIMIT 100)",
-        [&file_path_str],
-    ).ok();
+    // Trim to 100 per file
+    let mut names: Vec<String> = fs::read_dir(&dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.ends_with(".snap"))
+        .collect();
+    names.sort();
+    if names.len() > 100 {
+        for old in &names[..names.len() - 100] {
+            let _ = fs::remove_file(dir.join(old));
+        }
+    }
 
     Ok(true)
 }
 
 #[tauri::command]
-fn list_snapshots(
-    state: tauri::State<'_, DbState>,
-    file_path: String,
-) -> Result<Vec<SnapshotInfo>, String> {
+fn list_snapshots(file_path: String) -> Result<Vec<SnapshotInfo>, String> {
     let canonical = validate_path(&file_path)?;
     let file_path_str = canonical.to_string_lossy().to_string();
+    let dir = snapshots_dir().join(path_hash(&file_path_str));
 
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let mut stmt = conn
-        .prepare("SELECT id, created_at FROM snapshots WHERE file_path = ?1 ORDER BY created_at DESC LIMIT 50")
-        .map_err(|e| e.to_string())?;
+    if !dir.exists() {
+        return Ok(vec![]);
+    }
 
-    let rows = stmt.query_map([&file_path_str], |row| {
-        Ok(SnapshotInfo { id: row.get(0)?, created_at: row.get(1)? })
-    }).map_err(|e| e.to_string())?;
+    let mut names: Vec<String> = fs::read_dir(&dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.ends_with(".snap"))
+        .collect();
+    names.sort_by(|a, b| b.cmp(a));
+    names.truncate(50);
 
-    let mut snapshots = Vec::new();
-    for row in rows { snapshots.push(row.map_err(|e| e.to_string())?); }
+    let snapshots: Vec<SnapshotInfo> = names.iter().map(|n| {
+        let id = n.trim_end_matches(".snap").to_string();
+        let created_at = if let Some(ts) = id.split('_').next() {
+            chrono::NaiveDateTime::parse_from_str(ts, "%Y%m%dT%H%M%S")
+                .map(|dt| dt.and_utc().to_rfc3339())
+                .unwrap_or_else(|_| id.clone())
+        } else {
+            id.clone()
+        };
+        SnapshotInfo { id, created_at }
+    }).collect();
+
     Ok(snapshots)
 }
 
 #[tauri::command]
-fn get_snapshot_content(
-    state: tauri::State<'_, DbState>,
-    snapshot_id: i64,
-) -> Result<String, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    conn.query_row("SELECT content FROM snapshots WHERE id = ?1", [snapshot_id], |row| row.get(0))
-        .map_err(|_| "Snapshot not found".to_string())
+fn get_snapshot_content(file_path: String, snapshot_id: String) -> Result<String, String> {
+    // Validate snapshot_id contains no path separators (prevent path traversal)
+    if snapshot_id.contains('/') || snapshot_id.contains('\\') || snapshot_id.contains("..") {
+        return Err("Invalid snapshot ID".to_string());
+    }
+    let canonical = validate_path(&file_path)?;
+    let file_path_str = canonical.to_string_lossy().to_string();
+    let dir = snapshots_dir().join(path_hash(&file_path_str));
+    let snap_file = dir.join(format!("{}.snap", snapshot_id));
+    fs::read_to_string(&snap_file).map_err(|_| "Snapshot not found".to_string())
 }
 
 #[derive(serde::Serialize)]
@@ -676,50 +688,80 @@ struct SnapshotStats {
 }
 
 #[tauri::command]
-fn get_snapshot_stats(state: tauri::State<'_, DbState>) -> Result<SnapshotStats, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let (count, size_bytes) = conn
-        .query_row(
-            "SELECT COUNT(*), COALESCE(SUM(LENGTH(content)), 0) FROM snapshots",
-            [],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
-        )
-        .map_err(|e| format!("Failed to query snapshot stats: {}", e))?;
-    Ok(SnapshotStats { count, size_bytes })
+fn get_snapshot_stats() -> Result<SnapshotStats, String> {
+    let base = snapshots_dir();
+    let mut count: i64 = 0;
+    let mut size: i64 = 0;
+    if let Ok(dirs) = fs::read_dir(&base) {
+        for dir_entry in dirs.flatten() {
+            if dir_entry.path().is_dir() {
+                if let Ok(files) = fs::read_dir(dir_entry.path()) {
+                    for f in files.flatten() {
+                        if f.path().extension().map(|e| e == "snap").unwrap_or(false) {
+                            count += 1;
+                            size += f.metadata().map(|m| m.len() as i64).unwrap_or(0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(SnapshotStats { count, size_bytes: size })
 }
 
 #[tauri::command]
-fn cleanup_snapshots(
-    state: tauri::State<'_, DbState>,
-    retention_days: i64,
-    retention_count: i64,
-) -> Result<i64, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let cutoff = Utc::now() - chrono::Duration::days(retention_days);
-    let cutoff_str = cutoff.to_rfc3339();
+fn cleanup_snapshots(retention_days: i64, retention_count: i64) -> Result<i64, String> {
+    let base = snapshots_dir();
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(retention_days);
+    let cutoff_str = cutoff.format("%Y%m%dT%H%M%S").to_string();
+    let mut deleted: i64 = 0;
 
-    let deleted_by_date = conn
-        .execute(
-            "DELETE FROM snapshots WHERE created_at < ?1",
-            [&cutoff_str],
-        )
-        .map_err(|e| format!("Cleanup by date failed: {}", e))? as i64;
+    if let Ok(dirs) = fs::read_dir(&base) {
+        for dir_entry in dirs.flatten() {
+            if !dir_entry.path().is_dir() { continue; }
+            let mut names: Vec<String> = fs::read_dir(dir_entry.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|n| n.ends_with(".snap"))
+                .collect();
+            names.sort();
 
-    let deleted_by_count = conn
-        .execute(
-            "DELETE FROM snapshots WHERE id NOT IN (
-                SELECT id FROM (
-                    SELECT id, ROW_NUMBER() OVER (PARTITION BY file_path ORDER BY created_at DESC) as rn
-                    FROM snapshots
-                ) WHERE rn <= ?1
-            )",
-            [retention_count],
-        )
-        .map_err(|e| format!("Cleanup by count failed: {}", e))? as i64;
+            let date_delete: Vec<String> = names.iter()
+                .filter(|n| n.split('_').next().map(|ts| ts < cutoff_str.as_str()).unwrap_or(false))
+                .cloned()
+                .collect();
+            for n in &date_delete {
+                if fs::remove_file(dir_entry.path().join(n)).is_ok() {
+                    deleted += 1;
+                }
+            }
 
-    conn.execute_batch("VACUUM").ok();
+            let mut remaining: Vec<String> = fs::read_dir(dir_entry.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|n| n.ends_with(".snap"))
+                .collect();
+            remaining.sort();
+            if remaining.len() as i64 > retention_count {
+                let to_remove = remaining.len() as i64 - retention_count;
+                for n in &remaining[..to_remove as usize] {
+                    if fs::remove_file(dir_entry.path().join(n)).is_ok() {
+                        deleted += 1;
+                    }
+                }
+            }
 
-    Ok(deleted_by_date + deleted_by_count)
+            if fs::read_dir(dir_entry.path()).map(|mut d| d.next().is_none()).unwrap_or(false) {
+                let _ = fs::remove_dir(dir_entry.path());
+            }
+        }
+    }
+
+    Ok(deleted)
 }
 
 // --- Types ---
@@ -734,8 +776,8 @@ pub struct DirectoryListing {
     pub total: usize,
 }
 
-#[derive(serde::Serialize)]
-struct SnapshotInfo { id: i64, created_at: String }
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SnapshotInfo { id: String, created_at: String }
 
 struct InitialFile(Mutex<Option<String>>);
 
@@ -959,18 +1001,6 @@ fn setup_menu(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let db_path = get_db_path();
-    let conn = match Connection::open(&db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            safe_eprintln!("Database open failed: {}", e);
-            Connection::open_in_memory().expect("In-memory database also failed")
-        }
-    };
-    if let Err(e) = init_db(&conn) {
-        safe_eprintln!("Database init warning: {}", e);
-    }
-
     let initial_file: Option<String> = std::env::args()
         .skip(1)
         .find(|arg| {
@@ -990,23 +1020,58 @@ pub fn run() {
             ai::cleanup_decay_cache();
             Ok(())
         })
-        .manage(DbState(Mutex::new(conn)))
         .manage(InitialFile(Mutex::new(initial_file)))
         .manage(watcher::WatcherState {
             watcher: Mutex::new(None),
             watched_path: Mutex::new(None),
         })
-        .manage(pty::PtyState {
+        .manage(terminal::pty::PtyState {
             sessions: Mutex::new(std::collections::HashMap::new()),
-        })
-        .manage(rag::RagState {
-            indexer: Mutex::new(None),
         })
         .manage(mcp::McpState {
             registry: std::sync::Arc::new(tokio::sync::Mutex::new(mcp::registry::McpRegistry::new())),
             health_check_handle: std::sync::Mutex::new(None),
         })
         .manage(ai::AiCancelRegistry::new())
+        .manage(ai::ShellConfirmState {
+            sender: std::sync::Mutex::new(None),
+        })
+        .manage({
+            let ai_tool_registry = ai::tool::registry::ToolRegistry::new();
+            tauri::async_runtime::block_on(async {
+                ai::tools::register_builtin_tools(&ai_tool_registry).await;
+            });
+            ai::AiToolRegistryState { registry: ai_tool_registry }
+        })
+        .manage({
+            let ai_skill_registry = ai::skill::registry::SkillRegistry::new("default");
+            tauri::async_runtime::block_on(async {
+                ai::skills::register_builtin_skills(&ai_skill_registry).await;
+            });
+            ai::AiSkillRegistryState { registry: ai_skill_registry }
+        })
+        .manage({
+            let memory_dir = app_data_dir().join("inkess").join("memories");
+            let memory_store = ai::memory::FileMemoryStore::new(memory_dir.clone())
+                .unwrap_or_else(|e| {
+                    safe_eprintln!("[memory] Failed to initialize memory store at {:?}: {}. Trying temp fallback.", memory_dir, e);
+                    let fallback_dir = std::env::temp_dir().join("inkess-memories");
+                    ai::memory::FileMemoryStore::new(fallback_dir.clone())
+                        .unwrap_or_else(|e2| {
+                            safe_eprintln!("[memory] Fallback also failed at {:?}: {}. Using empty store.", fallback_dir, e2);
+                            // Last resort: create in-place with a known-good temp dir
+                            let last_resort = std::env::temp_dir().join(format!("inkess-mem-{}", std::process::id()));
+                            ai::memory::FileMemoryStore::new(last_resort)
+                                .expect("Cannot create memory store even in temp directory")
+                        })
+                });
+            ai::MemoryStoreState {
+                store: std::sync::Arc::new(memory_store),
+            }
+        })
+        .manage(bm25::Bm25State {
+            index: Mutex::new(None),
+        })
         .invoke_handler(tauri::generate_handler![
             read_file, read_file_binary, read_file_lines, save_file, list_directory, write_file, get_file_size,
             create_snapshot, list_snapshots, get_snapshot_content,
@@ -1015,18 +1080,19 @@ pub fn run() {
             fileops::create_file, fileops::create_directory,
             fileops::rename_entry, fileops::delete_to_trash, fileops::search_files, fileops::copy_file_to_dir,
             watcher::watch_directory, watcher::unwatch_directory,
-            pty::pty_spawn, pty::pty_write, pty::pty_resize, pty::pty_kill,
+            terminal::pty::pty_spawn, terminal::pty::pty_write, terminal::pty::pty_resize, terminal::pty::pty_kill,
             git::git_status, git::git_init, git::git_stage, git::git_unstage,
             git::git_commit, git::git_push, git::git_pull,
             git::git_remote_add, git::git_remote_list, git::git_log,
             git::git_config_user, git::setup_ssh_key,
             ai::ai_save_config, ai::ai_load_config, ai::ai_test_connection, ai::ai_test_search, ai::ai_chat,
             ai::ai_save_memory, ai::ai_load_memories, ai::ai_cancel_chat,
+            ai::shell_confirm_response, ai::sync_mcp_tools,
             license::license_load, license::license_activate, license::license_deactivate, license::open_external_url,
             python_setup::check_python_env,
             python_setup::preload_python_env,
             save_settings, load_settings,
-            rag::rag_init, rag::rag_search, rag::rag_stats, rag::rag_rebuild,
+            bm25::bm25_init, bm25::bm25_search,
             mcp::mcp_add_server, mcp::mcp_remove_server, mcp::mcp_restart_server,
             mcp::mcp_list_servers, mcp::mcp_list_tools, mcp::mcp_tool_logs,
             get_debug_logs, clear_debug_logs,
@@ -1044,9 +1110,19 @@ pub fn run() {
                     let mcp_state = _app.state::<mcp::McpState>();
                     let registry = mcp_state.registry.clone();
                     let registry2 = mcp_state.registry.clone();
+                    let app_handle = _app.clone();
                     tauri::async_runtime::spawn(async move {
-                        let mut reg = registry.lock().await;
-                        reg.connect_all_enabled().await;
+                        {
+                            let mut reg = registry.lock().await;
+                            reg.connect_all_enabled().await;
+                        }
+                        // Sync MCP tools into ToolRegistry after connecting
+                        let tool_registry_state = app_handle.state::<ai::AiToolRegistryState>();
+                        let mcp_state = app_handle.state::<mcp::McpState>();
+                        ai::tools::mcp_bridge::sync_mcp_tools(
+                            &tool_registry_state.registry,
+                            &mcp_state.registry,
+                        ).await;
                     });
                     // Start MCP health check background task
                     let handle = mcp::start_health_check(registry2);
@@ -1067,7 +1143,7 @@ pub fn run() {
                         }
                     }
                     // Kill all PTY sessions
-                    let pty_state = _app.state::<pty::PtyState>();
+                    let pty_state = _app.state::<terminal::pty::PtyState>();
                     if let Ok(mut sessions) = pty_state.sessions.lock() {
                         for (sid, mut session) in sessions.drain() {
                             safe_eprintln!("[cleanup] killing PTY session: {}", sid);

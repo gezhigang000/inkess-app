@@ -3,9 +3,15 @@ import { saveSettings, loadSettings } from './tauri'
 
 export type Language = 'zh' | 'en'
 
+// Platform-aware modifier key symbol
+const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent)
+export const modKey = isMac ? '⌘' : 'Ctrl+'
+const modLabel = isMac ? 'Cmd' : 'Ctrl'
+const shiftKey = isMac ? '⇧' : 'Shift+'
+
 const dict: Record<string, { zh: string; en: string }> = {
   // Toolbar
-  'toolbar.open': { zh: '打开 (⌘O)', en: 'Open (⌘O)' },
+  'toolbar.open': { zh: `打开 (${modKey}O)`, en: `Open (${modKey}O)` },
   'toolbar.open.label': { zh: '打开', en: 'Open' },
   'toolbar.edit': { zh: '编辑', en: 'Edit' },
   'toolbar.read': { zh: '阅读', en: 'Read' },
@@ -22,12 +28,12 @@ const dict: Record<string, { zh: string; en: string }> = {
   'toolbar.split': { zh: '分屏', en: 'Split' },
   'toolbar.exportAs': { zh: '导出为 {fmt}', en: 'Export as {fmt}' },
   'toolbar.ai': { zh: 'AI 助手', en: 'AI Assistant' },
-  'toolbar.devMode': { zh: '开发者模式 (⌘D)', en: 'Developer Mode (⌘D)' },
+  'toolbar.devMode': { zh: `开发者模式 (${modKey}D)`, en: `Developer Mode (${modKey}D)` },
   'toolbar.cycleTheme': { zh: '切换主题', en: 'Switch Theme' },
   // Sidebar
   'sidebar.files': { zh: '文件', en: 'Files' },
   'sidebar.fileBrowser': { zh: '文件浏览器', en: 'File Browser' },
-  'sidebar.empty': { zh: '拖入文件或按 Cmd+O 打开', en: 'Drop files or press Cmd+O' },
+  'sidebar.empty': { zh: `拖入文件或按 ${modLabel}+O 打开`, en: `Drop files or press ${modLabel}+O` },
   'sidebar.noSupported': { zh: '此目录没有支持的文件', en: 'No supported files here' },
   'sidebar.depthLimit': { zh: '嵌套层级过深，无法继续展开', en: 'Nesting too deep, cannot expand further' },
   'sidebar.truncated': { zh: '还有 {n} 个未显示，建议使用搜索', en: '{n} more items not shown, use search' },
@@ -38,7 +44,7 @@ const dict: Record<string, { zh: string; en: string }> = {
   'welcome.recent': { zh: '最近打开', en: 'Recent' },
   'welcome.emptyHint': { zh: '打开一个文件夹开始使用', en: 'Open a folder to get started' },
   'welcome.openFolder': { zh: '打开文件夹', en: 'Open Folder' },
-  'welcome.quickOpen': { zh: '或按 <kbd>⌘ O</kbd> 快速打开', en: 'or press <kbd>⌘ O</kbd> to quick open' },
+  'welcome.quickOpen': { zh: `或按 <kbd>${modKey}O</kbd> 快速打开`, en: `or press <kbd>${modKey}O</kbd> to quick open` },
   // Timeline
   'timeline.label': { zh: '版本', en: 'Versions' },
   'timeline.nav': { zh: '版本时间线', en: 'Version Timeline' },
@@ -143,6 +149,8 @@ const dict: Record<string, { zh: string; en: string }> = {
   'ai.deepModeOff': { zh: '深度思考模式已关闭', en: 'Deep thinking mode disabled' },
   'ai.noWorkspace': { zh: '请先打开一个目录作为工作区', en: 'Please open a directory as workspace first' },
   'ai.currentWorkspace': { zh: '工作区: {dir}', en: 'Workspace: {dir}' },
+  'ai.skillChanged': { zh: '已切换到 {skill} 模式', en: 'Switched to {skill} mode' },
+  'ai.skillIndicator.label': { zh: '当前技能', en: 'Active Skill' },
   'toolbar.needWorkspace': { zh: '请先打开工作目录', en: 'Open a workspace first' },
   // AIModelConfig
   'aiConfig.title': { zh: 'AI 模型配置', en: 'AI Model Config' },
@@ -216,28 +224,6 @@ const dict: Record<string, { zh: string; en: string }> = {
   'settings.cleanupDone': { zh: '已清理 {n} 个快照', en: 'Cleaned up {n} snapshots' },
   'settings.settingsSaved': { zh: '设置已保存', en: 'Settings saved' },
   'settings.loading': { zh: '加载中...', en: 'Loading...' },
-  // RAG Knowledge Base
-  'rag.status.indexing': { zh: '索引中...', en: 'Indexing...' },
-  'rag.status.ready': { zh: '知识库就绪', en: 'Knowledge base ready' },
-  'rag.status.error': { zh: '索引失败', en: 'Index failed' },
-  'rag.status.disabled': { zh: '知识库未启用', en: 'Knowledge base disabled' },
-  'rag.stats': { zh: '{files} 文件, {chunks} 块, {size}', en: '{files} files, {chunks} chunks, {size}' },
-  'rag.knowledgeBase': { zh: '知识库', en: 'Knowledge Base' },
-  'rag.rebuild': { zh: '重建索引', en: 'Rebuild Index' },
-  'rag.rebuilding': { zh: '重建中...', en: 'Rebuilding...' },
-  'rag.clearIndex': { zh: '清除索引', en: 'Clear Index' },
-  'rag.cleared': { zh: '索引已清除', en: 'Index cleared' },
-  'rag.rebuildDone': { zh: '索引重建完成', en: 'Index rebuilt' },
-  'rag.initFailed': { zh: '知识库初始化失败', en: 'Knowledge base init failed' },
-  'rag.modelDownloading': { zh: '下载嵌入模型...', en: 'Downloading embedding model...' },
-  'rag.tooltip.files': { zh: '文件数: {n}', en: 'Files: {n}' },
-  'rag.tooltip.chunks': { zh: '块数: {n}', en: 'Chunks: {n}' },
-  'rag.tooltip.size': { zh: '数据库大小: {size}', en: 'DB size: {size}' },
-  'rag.tooltip.indexing': { zh: '正在索引...', en: 'Indexing...' },
-  // Model download progress
-  'ai.downloadingModel': { zh: '下载模型中...', en: 'Downloading model...' },
-  'ai.downloadingTokenizer': { zh: '下载分词器中...', en: 'Downloading tokenizer...' },
-  'ai.loadingModel': { zh: '加载模型中...', en: 'Loading model...' },
   // MCP Servers
   'mcp.title': { zh: 'MCP Servers', en: 'MCP Servers' },
   'mcp.addServer': { zh: '添加 Server', en: 'Add Server' },
@@ -452,6 +438,11 @@ const dict: Record<string, { zh: string; en: string }> = {
   'mdToolbar.linkText': { zh: '显示文本', en: 'Display Text' },
   'mdToolbar.insert': { zh: '插入', en: 'Insert' },
   'mdToolbar.saveFirst': { zh: '请先保存文件', en: 'Please save the file first' },
+  // Shell confirm dialog
+  'shellConfirm.title': { zh: 'AI 请求执行命令', en: 'AI wants to run a command' },
+  'shellConfirm.message': { zh: 'AI 助手请求执行以下 Shell 命令：', en: 'The AI assistant is requesting to execute the following shell command:' },
+  'shellConfirm.allow': { zh: '允许', en: 'Allow' },
+  'shellConfirm.deny': { zh: '拒绝', en: 'Deny' },
 }
 
 interface I18nContextValue {

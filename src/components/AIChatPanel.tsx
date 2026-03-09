@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { type AiConfig, type ChatMessage, type AiStreamEvent, type MemoryEntry, type PythonSetupProgress, aiLoadConfig, aiChat, aiSaveMemory, aiLoadMemories, aiSaveConfig, ragStats, type RagIndexStats, readFileLines, mcpToolLogs, type McpToolCallLog, aiCancelChat } from '../lib/tauri'
-import { AIModelConfig, PRESETS } from './AIModelConfig'
+import { type AiConfig, type ChatMessage, type AiStreamEvent, type MemoryEntry, type PythonSetupProgress, type SkillChangedEvent, aiLoadConfig, aiChat, aiSaveMemory, aiLoadMemories, aiSaveConfig } from '../lib/tauri'
+import { AIModelConfig } from './AIModelConfig'
 import { listen } from '@tauri-apps/api/event'
-import DOMPurify from 'dompurify'
 import { useI18n } from '../lib/i18n'
 import { UpgradePrompt } from './UpgradePrompt'
+import { AIChatHeader } from './AIChatHeader'
+import { AIChatMessages, type UIMessage } from './AIChatMessages'
+import { AIChatInput } from './AIChatInput'
 
 /** Default base prompt — user can customize in AI config */
 export const DEFAULT_BASE_PROMPT = `You are Inkess AI assistant. Current working directory: {currentDir}. You can use tools to read files, list directories, search files, fetch web pages, write files, and open files for the user.
@@ -96,24 +98,6 @@ For simple answers, reply directly in chat.`,
     prompt: `You are Inkess AI assistant. Current working directory: {currentDir}. You can use tools to read files, list directories, search files, execute Python, and search the web. Be concise and direct.`,
   },
 ]
-
-interface RagStatusEvent {
-  status: string
-  message: string
-}
-
-interface ModelProgressEvent {
-  stage: string
-  progress: number // 0~1 determinate, -1 indeterminate
-  downloaded_bytes: number
-}
-
-interface UIMessage {
-  role: 'user' | 'assistant' | 'tool_call' | 'tool_result' | 'system'
-  content: string
-  toolName?: string
-  toolId?: string
-}
 
 interface AIChatPanelProps {
   visible: boolean
@@ -226,24 +210,6 @@ function saveSessions(sessions: ChatSession[]) {
   } catch { /* ignore */ }
 }
 
-/** Highlight search query matches in text with <mark> tags */
-function highlightText(text: string, query: string): React.ReactNode {
-  if (!query) return text
-  const lc = text.toLowerCase()
-  const lcq = query.toLowerCase()
-  const parts: React.ReactNode[] = []
-  let last = 0
-  let idx = lc.indexOf(lcq, last)
-  while (idx !== -1) {
-    if (idx > last) parts.push(text.slice(last, idx))
-    parts.push(<mark key={idx}>{text.slice(idx, idx + query.length)}</mark>)
-    last = idx + query.length
-    idx = lc.indexOf(lcq, last)
-  }
-  if (last < text.length) parts.push(text.slice(last))
-  return parts.length > 0 ? <>{parts}</> : text
-}
-
 export function AIChatPanel({ visible, currentDir, onClose, onToast, isPro = true, onOpenLicense, onOpenFile, busyRef }: AIChatPanelProps) {
   const [messages, setMessages] = useState<UIMessage[]>(loadHistory)
   const [input, setInput] = useState('')
@@ -257,35 +223,22 @@ export function AIChatPanel({ visible, currentDir, onClose, onToast, isPro = tru
   const [sessions, setSessions] = useState<ChatSession[]>(loadSessions)
   const [pythonSetup, setPythonSetup] = useState<PythonSetupProgress | null>(null)
   const [deepMode, setDeepMode] = useState(false)
-  const [ragStatus, setRagStatus] = useState<RagStatusEvent | null>(null)
-  const [ragStatData, setRagStatData] = useState<RagIndexStats | null>(null)
-  const [modelProgress, setModelProgress] = useState<ModelProgressEvent | null>(null)
-  const [hoverPreview, setHoverPreview] = useState<{ x: number; y: number; content: string; path: string; line: number } | null>(null)
-  const [showToolLogs, setShowToolLogs] = useState(false)
-  const [toolLogs, setToolLogs] = useState<McpToolCallLog[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
-  const [expandedLogIdx, setExpandedLogIdx] = useState<number | null>(null)
-  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [activeSkill, setActiveSkill] = useState('Default')
+  const [activeSkillId, setActiveSkillId] = useState('default')
   const summarizedRef = useRef(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const assistantBufferRef = useRef('')
   const messagesRef = useRef(messages)
   messagesRef.current = messages
-  const { t, lang } = useI18n()
+  const { t } = useI18n()
 
   // Sync busy state to parent ref
   useEffect(() => {
     if (busyRef) busyRef.current = streaming
   }, [streaming, busyRef])
-
-  // Cleanup hover timer on unmount
-  useEffect(() => {
-    return () => {
-      if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
-    }
-  }, [])
 
   // Resize drag state
   const [panelWidth, setPanelWidth] = useState(() => {
@@ -346,7 +299,7 @@ export function AIChatPanel({ visible, currentDir, onClose, onToast, isPro = tru
   const prevDirRef = useRef(currentDir)
   useEffect(() => {
     if (prevDirRef.current && currentDir && currentDir !== prevDirRef.current && visible) {
-      const dirName = currentDir.split('/').pop() || currentDir
+      const dirName = currentDir.replace(/\\/g, '/').split('/').pop() || currentDir
       setMessages(prev => [...prev, {
         role: 'system',
         content: t('ai.workspaceSwitched', { dir: dirName }),
@@ -429,6 +382,20 @@ export function AIChatPanel({ visible, currentDir, onClose, onToast, isPro = tru
     return () => { cancelled = true; unlisten?.() }
   }, [sessionId])
 
+  // Listen for skill-changed events
+  useEffect(() => {
+    let unlisten: (() => void) | undefined
+    listen<SkillChangedEvent>('skill-changed', (event) => {
+      const { session_id, skill_id, skill_name } = event.payload
+      if (session_id !== sessionId) return
+
+      setActiveSkillId(skill_id)
+      setActiveSkill(skill_name)
+      onToast(t('ai.skillChanged', { skill: skill_name }))
+    }).then(fn => { unlisten = fn })
+    return () => { unlisten?.() }
+  }, [sessionId, onToast, t])
+
   // Listen for Python setup progress events
   useEffect(() => {
     let unlisten: (() => void) | undefined
@@ -445,36 +412,6 @@ export function AIChatPanel({ visible, currentDir, onClose, onToast, isPro = tru
       }
     }).then(fn => { unlisten = fn })
     return () => { cancelled = true; unlisten?.(); if (timer) clearTimeout(timer) }
-  }, [])
-
-  // Listen for RAG status events
-  useEffect(() => {
-    let unlisten: (() => void) | undefined
-    let cancelled = false
-    listen<RagStatusEvent>('rag-status', (event) => {
-      if (cancelled) return
-      setRagStatus(event.payload)
-      if (event.payload.status === 'ready') {
-        ragStats().then(setRagStatData).catch(() => {})
-      }
-    }).then(fn => { unlisten = fn })
-    return () => { cancelled = true; unlisten?.() }
-  }, [])
-
-  // Listen for RAG model download progress
-  useEffect(() => {
-    let unlisten: (() => void) | undefined
-    let cancelled = false
-    listen<ModelProgressEvent>('rag-model-progress', (event) => {
-      if (cancelled) return
-      const { stage, progress, downloaded_bytes } = event.payload
-      if (stage === 'ready') {
-        setModelProgress(null)
-      } else {
-        setModelProgress({ stage, progress, downloaded_bytes })
-      }
-    }).then(fn => { unlisten = fn })
-    return () => { cancelled = true; unlisten?.() }
   }, [])
 
   // Listen for open-file-request from AI tools (open_file tool)
@@ -541,7 +478,7 @@ export function AIChatPanel({ visible, currentDir, onClose, onToast, isPro = tru
     }
 
     try {
-      await aiChat(sessionId, apiMessages, config, deepMode, currentDir || undefined)
+      await aiChat(sessionId, apiMessages, config, deepMode, currentDir || undefined, activeSkillId)
       // Auto-summarize after 20 user/assistant messages
       const sumMsgs = [...messagesRef.current, userMsg].filter(m => m.role === 'user' || m.role === 'assistant')
       if (sumMsgs.length >= 20 && !summarizedRef.current && currentDir) {
@@ -584,8 +521,18 @@ export function AIChatPanel({ visible, currentDir, onClose, onToast, isPro = tru
       })
     }
     setMessages([])
+    setActiveSkill('Default')
+    setActiveSkillId('default')
     summarizedRef.current = false
     localStorage.removeItem(HISTORY_KEY)
+  }
+
+  const handleCopyChat = () => {
+    const md = messages
+      .filter(m => m.role === 'user' || m.role === 'assistant')
+      .map(m => `**${m.role === 'user' ? 'You' : 'AI'}:**\n${m.content}`)
+      .join('\n\n---\n\n')
+    navigator.clipboard.writeText(md).then(() => onToast(t('ai.copiedChat'))).catch(() => onToast('Copy failed'))
   }
 
   return (
@@ -599,443 +546,59 @@ export function AIChatPanel({ visible, currentDir, onClose, onToast, isPro = tru
       }}>
         {/* Resize handle */}
         <div className="ai-panel-resize" onMouseDown={handleResizeStart} />
-        {/* Header */}
-        <div className="ai-panel-header">
-          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{t('ai.title')}</span>
-          {config && (
-            <div style={{ position: 'relative', marginLeft: 6 }}>
-              <button
-                className="git-btn"
-                style={{ fontSize: 11, padding: '2px 8px', color: 'var(--text-2)' }}
-                onClick={() => setShowModelMenu(v => !v)}
-                title={t('ai.switchModel')}
-              >
-                {config.model} ▾
-              </button>
-              {showModelMenu && (
-                <div
-                  style={{
-                    position: 'absolute', top: '100%', left: 0, marginTop: 4,
-                    background: 'var(--bg)', border: '1px solid var(--border-s)',
-                    borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.12)',
-                    zIndex: 100, minWidth: 160, padding: '4px 0',
-                  }}
-                >
-                  {PRESETS.filter(p => p.model).map(p => {
-                    const hasKey = !!(config.provider_keys?.[p.api_url] || (p.api_url === config.api_url && config.api_key))
-                    const isActive = config.model === p.model && config.api_url === p.api_url
-                    return (
-                      <button
-                        key={p.model}
-                        className="ctx-menu-item"
-                        disabled={!hasKey}
-                        style={{
-                          width: '100%', textAlign: 'left', fontSize: 12, padding: '6px 12px',
-                          background: isActive ? 'var(--accent-subtle)' : 'transparent',
-                          opacity: hasKey ? 1 : 0.4,
-                          cursor: hasKey ? 'pointer' : 'not-allowed',
-                        }}
-                        title={hasKey ? '' : t('ai.keyNotConfigured')}
-                        onClick={async () => {
-                          if (!hasKey) return
-                          const providerKey = config.provider_keys?.[p.api_url] || config.api_key
-                          const updated = { ...config, model: p.model, api_url: p.api_url || config.api_url, api_key: providerKey }
-                          setConfig(updated)
-                          setShowModelMenu(false)
-                          try { await aiSaveConfig(updated) } catch { /* silent */ }
-                        }}
-                      >
-                        {p.label} <span style={{ color: 'var(--text-3)', marginLeft: 4 }}>{p.model}</span>
-                        {!hasKey && <span style={{ fontSize: 10, color: 'var(--text-3)', marginLeft: 4 }}>🔒</span>}
-                      </button>
-                    )
-                  })}
-                  {config.model && !PRESETS.some(p => p.model === config.model) && (
-                    <button
-                      className="ctx-menu-item"
-                      style={{ width: '100%', textAlign: 'left', fontSize: 12, padding: '6px 12px', background: 'var(--accent-subtle)' }}
-                      onClick={() => setShowModelMenu(false)}
-                    >
-                      {config.model}
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-          {config && (() => {
-            const bp = config.base_prompt || DEFAULT_BASE_PROMPT
-            const preset = PROMPT_PRESETS.find(p => p.prompt === bp)
-            const label = preset ? (lang === 'zh' ? preset.label_zh : preset.label) : t('aiConfig.custom')
-            return (
-              <span style={{ fontSize: 10, color: 'var(--accent)', background: 'var(--accent-subtle)', padding: '1px 6px', borderRadius: 4, marginLeft: 6 }}>
-                {label}
-              </span>
-            )
-          })()}
-          {memories.length > 0 && (
-            <span style={{ fontSize: 10, color: 'var(--text-3)', marginLeft: 6 }} title={t('ai.memories', { n: memories.length })}>
-              {t('ai.memories', { n: memories.length })}
-            </span>
-          )}
-          {ragStatus && (
-            <span
-              style={{ fontSize: 10, marginLeft: 6, display: 'inline-flex', alignItems: 'center', gap: 3, cursor: 'default' }}
-              title={
-                ragStatus.status === 'ready' && ragStatData
-                  ? `${t('rag.tooltip.files', { n: ragStatData.file_count })}\n${t('rag.tooltip.chunks', { n: ragStatData.chunk_count })}\n${t('rag.tooltip.size', { size: ragStatData.db_size_bytes < 1024 * 1024 ? (ragStatData.db_size_bytes / 1024).toFixed(1) + ' KB' : (ragStatData.db_size_bytes / (1024 * 1024)).toFixed(1) + ' MB' })}`
-                  : ragStatus.status === 'indexing'
-                    ? t('rag.tooltip.indexing')
-                    : ragStatus.message
-              }
-            >
-              <span style={{
-                width: 6, height: 6, borderRadius: '50%', display: 'inline-block',
-                background: ragStatus.status === 'ready' ? '#22c55e' : ragStatus.status === 'indexing' ? '#f59e0b' : 'var(--text-3)',
-                animation: ragStatus.status === 'indexing' ? 'pulse 1.5s infinite' : 'none',
-              }} />
-              <span style={{ color: 'var(--text-3)' }}>
-                {ragStatus.status === 'ready' ? 'KB' : ragStatus.status === 'indexing' ? t('rag.status.indexing') : ''}
-              </span>
-            </span>
-          )}
-          <div style={{ flex: 1 }} />
-          {messages.length > 0 && (
-            <>
-            <button className="sidebar-action-btn" onClick={() => {
-              const md = messages
-                .filter(m => m.role === 'user' || m.role === 'assistant')
-                .map(m => `**${m.role === 'user' ? 'You' : 'AI'}:**\n${m.content}`)
-                .join('\n\n---\n\n')
-              navigator.clipboard.writeText(md).then(() => onToast(t('ai.copiedChat'))).catch(() => onToast('Copy failed'))
-            }} title={t('ai.copyChat')} aria-label={t('ai.copyChat')}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: 14, height: 14 }}>
-                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
-              </svg>
-            </button>
-            <button className="sidebar-action-btn" onClick={handleClear} title={t('ai.newChat')} aria-label={t('ai.newChat')}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: 14, height: 14 }}>
-                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="12" y1="11" x2="12" y2="17" /><line x1="9" y1="14" x2="15" y2="14" />
-              </svg>
-            </button>
-            </>
-          )}
-          <button className="sidebar-action-btn" onClick={() => setShowHistory(true)} title={t('ai.chatHistory')} aria-label={t('ai.chatHistory')}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: 14, height: 14 }}>
-              <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
-            </svg>
-          </button>
-          <button className="sidebar-action-btn" onClick={handleClear} title={t('ai.clearChat')} aria-label={t('ai.clearChat')}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: 14, height: 14 }}>
-              <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
-            </svg>
-          </button>
-          <button className="sidebar-action-btn" onClick={() => setShowConfig(true)} title={t('ai.modelSettings')} aria-label={t('ai.modelSettings')}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: 14, height: 14 }}>
-              <circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" />
-            </svg>
-          </button>
-          <button className="sidebar-action-btn" onClick={onClose} title={t('ai.close')} aria-label={t('ai.close')}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: 14, height: 14 }}>
-              <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
-        </div>
 
-        {/* Model download progress bar */}
-        {modelProgress && (modelProgress.stage === 'downloading_model' || modelProgress.stage === 'downloading_tokenizer' || modelProgress.stage === 'loading') && (
-          <div style={{ padding: '4px 12px' }}>
-            <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 2 }}>
-              {modelProgress.stage === 'loading'
-                ? t('ai.loadingModel')
-                : modelProgress.stage === 'downloading_model' ? t('ai.downloadingModel') : t('ai.downloadingTokenizer')}
-              {modelProgress.progress >= 0
-                ? ` ${Math.round(modelProgress.progress * 100)}%`
-                : ` ${(modelProgress.downloaded_bytes / 1024 / 1024).toFixed(1)} MB`}
-            </div>
-            <div style={{ width: '100%', height: 3, borderRadius: 2, background: 'var(--border-s)', overflow: 'hidden' }}>
-              {modelProgress.progress >= 0 ? (
-                <div style={{
-                  width: `${Math.round(modelProgress.progress * 100)}%`,
-                  height: '100%',
-                  borderRadius: 2,
-                  background: 'var(--accent, #3b82f6)',
-                  transition: 'width 0.3s ease',
-                }} />
-              ) : (
-                <div style={{
-                  width: '30%',
-                  height: '100%',
-                  borderRadius: 2,
-                  background: 'var(--accent, #3b82f6)',
-                  animation: 'indeterminate-bar 1.5s ease-in-out infinite',
-                }} />
-              )}
-            </div>
-          </div>
-        )}
+        <AIChatHeader
+          config={config}
+          showModelMenu={showModelMenu}
+          setShowModelMenu={setShowModelMenu}
+          setConfig={setConfig}
+          activeSkill={activeSkill}
+          memories={memories}
+          messages={messages}
+          streaming={streaming}
+          onCopyChat={handleCopyChat}
+          onClear={handleClear}
+          onShowHistory={() => setShowHistory(true)}
+          onShowConfig={() => setShowConfig(true)}
+          onClose={onClose}
+        />
 
         {!isPro ? (
           <UpgradePrompt feature="ai" onOpenLicense={() => onOpenLicense?.()} />
         ) : (
         <>
-        {/* Search bar */}
-        {searchOpen && (
-          <div className="ai-search-bar">
-            <input
-              autoFocus
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              placeholder={t('ai.searchMessages')}
-              onKeyDown={e => { if (e.key === 'Escape') { setSearchOpen(false); setSearchQuery('') } }}
-            />
-            <span className="ai-search-count">
-              {searchQuery ? messages.filter(m => m.content.toLowerCase().includes(searchQuery.toLowerCase())).length : 0} {t('ai.matches')}
-            </span>
-            <button onClick={() => { setSearchOpen(false); setSearchQuery('') }} aria-label={t('ai.close')}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: 12, height: 12 }}>
-                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
-          </div>
-        )}
-        {/* Messages */}
-        <div className="ai-messages" aria-live="polite">
-          {messages.length === 0 && (
-            <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-3)', fontSize: 13 }}>
-              {config ? t('ai.startChat') : (
-                <button className="git-btn git-btn-primary" style={{ fontSize: 12 }} onClick={() => setShowConfig(true)}>
-                  {t('ai.configModel')}
-                </button>
-              )}
-            </div>
-          )}
-          {messages.filter(msg => !searchQuery || msg.content.toLowerCase().includes(searchQuery.toLowerCase())).map((msg, i) => {
-            // Format MCP tool names: mcp__{serverid}__{toolname} → serverid / toolname
-            const displayToolName = msg.toolName?.startsWith('mcp__')
-              ? msg.toolName.slice(5).replace('__', ' / ')
-              : msg.toolName
-            return (
-            <div key={i} className={`ai-msg ai-msg-${msg.role}`}>
-              {msg.role === 'tool_call' ? (
-                <div className="ai-msg-tool">
-                  <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>
-                    {t('ai.toolCall')} <span style={{ fontWeight: 600 }}>{displayToolName}</span>
-                  </div>
-                  {msg.toolName === 'run_python' ? (
-                    <PythonCodeBlock content={msg.content} />
-                  ) : (
-                    <CollapsibleBlock text={msg.content} maxLines={3} />
-                  )}
-                </div>
-              ) : msg.role === 'tool_result' ? (
-                <div className="ai-msg-tool">
-                  <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>
-                    {t('ai.toolResult', { name: displayToolName || '' })}
-                  </div>
-                  <CollapsibleBlock text={msg.content.length > 2000 ? msg.content.slice(0, 2000) + '...' : msg.content} maxLines={5} />
-                  {msg.toolName === 'write_file' && msg.content.startsWith('File written:') && (() => {
-                    const match = msg.content.match(/^File written: (.+?) \(/)
-                    const filePath = match?.[1]
-                    if (!filePath) return null
-                    const ext = filePath.split('.').pop()?.toLowerCase()
-                    const viewable = ['html', 'htm', 'md', 'txt', 'json', 'csv'].includes(ext || '')
-                    if (!viewable) return null
-                    return (
-                      <button
-                        className="git-btn"
-                        style={{ fontSize: 10, marginTop: 4, padding: '2px 8px' }}
-                        onClick={() => onOpenFile?.(filePath)}
-                      >
-                        {t('ai.openPreview')}
-                      </button>
-                    )
-                  })()}
-                </div>
-              ) : msg.role === 'system' ? (
-                <div style={{ textAlign: 'center', fontSize: 11, color: 'var(--text-3)', padding: '4px 0' }}>
-                  {msg.content}
-                </div>
-              ) : (
-                <div className={msg.role === 'user' ? 'ai-bubble ai-bubble-user' : 'ai-bubble ai-bubble-assistant'}>
-                  {msg.role === 'user' && searchQuery ? (
-                    <div style={{ whiteSpace: 'pre-wrap' }}>{highlightText(msg.content, searchQuery)}</div>
-                  ) : (
-                    <MessageContent text={msg.content} onOpenFile={onOpenFile} currentDir={currentDir} hoverTimerRef={hoverTimerRef} setHoverPreview={setHoverPreview} />
-                  )}
-                </div>
-              )}
-            </div>
-            )
-          })}
-          {streaming && messages[messages.length - 1]?.role !== 'assistant' && (
-            <div className="ai-msg ai-msg-assistant">
-              <div className="ai-bubble ai-bubble-assistant">
-                <span className="ai-typing-indicator" />
-              </div>
-            </div>
-          )}
-          <div ref={messagesEndRef} />
-        </div>
+        <AIChatMessages
+          messages={messages}
+          streaming={streaming}
+          config={config}
+          searchOpen={searchOpen}
+          searchQuery={searchQuery}
+          setSearchOpen={setSearchOpen}
+          setSearchQuery={setSearchQuery}
+          onOpenFile={onOpenFile}
+          onShowConfig={() => setShowConfig(true)}
+          currentDir={currentDir}
+          messagesEndRef={messagesEndRef}
+        />
 
-        {/* Python setup progress bar — fixed between messages and input */}
-        {pythonSetup && (
-          <div style={{ padding: '6px 12px', borderTop: '1px solid var(--border-s)', background: 'var(--bg-s)' }}>
-            <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 4 }}>
-              {pythonSetup.message}
-            </div>
-            {pythonSetup.status !== 'error' && (
-              <div style={{ width: '100%', height: 3, borderRadius: 2, background: 'var(--border-s)', overflow: 'hidden' }}>
-                <div style={{
-                  width: `${Math.round(pythonSetup.progress * 100)}%`,
-                  height: '100%',
-                  borderRadius: 2,
-                  background: pythonSetup.status === 'done' ? 'var(--green, #22c55e)' : 'var(--accent, #3b82f6)',
-                  transition: 'width 0.3s ease',
-                }} />
-              </div>
-            )}
-            {pythonSetup.status === 'error' && (
-              <div style={{ fontSize: 11, color: 'var(--red, #ef4444)', marginTop: 2 }}>
-                {t('ai.pythonSetup.error')}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Input */}
-        {!currentDir && (
-          <div style={{ padding: '6px 12px', fontSize: 11, color: 'var(--text-3)', background: 'var(--accent-subtle)', borderRadius: 4, margin: '0 12px 4px', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: 14, height: 14, flexShrink: 0 }}>
-              <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
-            </svg>
-            {t('ai.noWorkspace')}
-          </div>
-        )}
-        {currentDir && (
-          <div style={{ padding: '2px 12px', fontSize: 10, color: 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={currentDir}>
-            {t('ai.currentWorkspace', { dir: currentDir.split('/').pop() || currentDir })}
-          </div>
-        )}
-        <div className="ai-input-area">
-          <button
-            className={`ai-deep-toggle ${deepMode ? 'active' : ''}`}
-            onClick={() => {
-              setDeepMode(v => !v)
-              onToast(deepMode ? t('ai.deepModeOff') : t('ai.deepModeOn'))
-            }}
-            title={t('ai.deepMode')}
-            aria-label={t('ai.deepMode')}
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: 16, height: 16 }}>
-              <circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" />
-            </svg>
-          </button>
-          <textarea
-            ref={inputRef}
-            className="ai-input"
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={config ? t('ai.inputPlaceholder') : t('ai.configFirst')}
-            rows={1}
-            disabled={!config}
-            aria-label={t('ai.title')}
-          />
-          {streaming ? (
-          <button
-            className="ai-send-btn ai-stop-btn"
-            onClick={() => aiCancelChat(sessionId)}
-            aria-label={t('ai.stopGeneration')}
-          >
-            <svg viewBox="0 0 24 24" fill="currentColor" style={{ width: 14, height: 14 }}>
-              <rect x="6" y="6" width="12" height="12" rx="2" />
-            </svg>
-          </button>
-          ) : (
-          <button
-            className="ai-send-btn"
-            onClick={handleSend}
-            disabled={!input.trim() || !config}
-            aria-label={t('ai.sendMsg')}
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: 16, height: 16 }}>
-              <line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" />
-            </svg>
-          </button>
-          )}
-        </div>
-        {/* Tool logs button */}
-        <div style={{ padding: '4px 12px', borderTop: '1px solid var(--border-s)', display: 'flex', justifyContent: 'flex-end' }}>
-          <button className="git-btn" style={{ fontSize: 10 }} onClick={async () => {
-            try {
-              const logs = await mcpToolLogs()
-              setToolLogs(logs)
-              setShowToolLogs(true)
-            } catch { /* skip */ }
-          }}>{t('mcp.toolLogs')}</button>
-        </div>
+        <AIChatInput
+          config={config}
+          input={input}
+          setInput={setInput}
+          streaming={streaming}
+          deepMode={deepMode}
+          setDeepMode={setDeepMode}
+          currentDir={currentDir}
+          sessionId={sessionId}
+          pythonSetup={pythonSetup}
+          inputRef={inputRef}
+          onSend={handleSend}
+          onKeyDown={handleKeyDown}
+          onToast={onToast}
+        />
         </>
         )}
       </div>
-
-      {/* Hover preview tooltip */}
-      {hoverPreview && (
-        <div
-          className="ai-code-tooltip"
-          style={{
-            position: 'fixed',
-            left: Math.min(hoverPreview.x, window.innerWidth - 420),
-            top: Math.min(hoverPreview.y, window.innerHeight - 220),
-          }}
-          onMouseEnter={() => { /* keep visible */ }}
-          onMouseLeave={() => setHoverPreview(null)}
-        >
-          <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 4 }}>{hoverPreview.path}:{hoverPreview.line}</div>
-          <pre style={{ margin: 0, fontSize: 11, lineHeight: 1.5, whiteSpace: 'pre', overflow: 'auto' }}>{hoverPreview.content}</pre>
-        </div>
-      )}
-
-      {/* Tool logs panel */}
-      {showToolLogs && (
-        <div className="shortcuts-backdrop" onClick={() => setShowToolLogs(false)}>
-          <div className="shortcuts-modal" role="dialog" aria-modal="true" style={{ minWidth: 560, maxWidth: 640, maxHeight: '70vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-1">
-              <h3 style={{ margin: 0, fontSize: 14 }}>{t('mcp.toolLogs')}</h3>
-              <button className="sidebar-action-btn" onClick={() => setShowToolLogs(false)} aria-label={t('ai.close')}>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: 14, height: 14 }}>
-                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
-            </div>
-            {toolLogs.length === 0 ? (
-              <div style={{ fontSize: 12, color: 'var(--text-3)', textAlign: 'center', padding: 20 }}>{t('mcp.toolLog.noLogs')}</div>
-            ) : (
-              toolLogs.slice().reverse().map((log, i) => (
-                <div key={i} style={{ borderBottom: '1px solid var(--border-s)', padding: '8px 0' }}>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 11 }}>
-                    <span style={{ color: 'var(--text-3)' }}>{new Date(log.timestamp * 1000).toLocaleTimeString()}</span>
-                    <span style={{ color: 'var(--text-2)', fontWeight: 500 }}>{log.tool_name}</span>
-                    <span style={{ color: 'var(--text-3)' }}>{log.server_id}</span>
-                    <span style={{ color: log.is_error ? 'var(--red)' : 'var(--text-3)', marginLeft: 'auto' }}>{log.duration_ms}ms</span>
-                    <button className="git-btn" style={{ fontSize: 10, padding: '0 4px' }} onClick={() => setExpandedLogIdx(expandedLogIdx === i ? null : i)}>
-                      {expandedLogIdx === i ? t('mcp.toolLog.collapse') : t('mcp.toolLog.expand')}
-                    </button>
-                  </div>
-                  {expandedLogIdx === i && (
-                    <div style={{ marginTop: 6 }}>
-                      <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 2 }}>Arguments:</div>
-                      <pre style={{ fontSize: 10, color: 'var(--text-2)', whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: '0 0 6px', maxHeight: 100, overflow: 'auto', background: 'var(--bg)', padding: 4, borderRadius: 4 }}>{log.arguments}</pre>
-                      <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 2 }}>Result:</div>
-                      <pre style={{ fontSize: 10, color: log.is_error ? 'var(--red)' : 'var(--text-2)', whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: 0, maxHeight: 150, overflow: 'auto', background: 'var(--bg)', padding: 4, borderRadius: 4 }}>{log.result}</pre>
-                    </div>
-                  )}
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      )}
 
       {showHistory && (
         <div className="shortcuts-backdrop" onClick={() => setShowHistory(false)}>
@@ -1100,156 +663,6 @@ export function AIChatPanel({ visible, currentDir, onClose, onToast, isPro = tru
   )
 }
 
-/** Collapsible text block for tool call/result — collapses long content */
-function CollapsibleBlock({ text, maxLines = 3, label }: { text: string; maxLines?: number; label?: string }) {
-  const [expanded, setExpanded] = useState(false)
-  const lines = text.split('\n')
-  const needsCollapse = lines.length > maxLines + 2
-  const displayText = needsCollapse && !expanded ? lines.slice(0, maxLines).join('\n') : text
-
-  return (
-    <div>
-      {label && <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 2 }}>{label}</div>}
-      <pre style={{ fontSize: 11, color: 'var(--text-2)', whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: 0 }}>
-        {displayText}
-        {needsCollapse && !expanded && '\n...'}
-      </pre>
-      {needsCollapse && (
-        <button
-          onClick={() => setExpanded(v => !v)}
-          style={{ fontSize: 10, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 0', marginTop: 2 }}
-        >
-          {expanded ? '▲ Collapse' : `▼ Show all (${lines.length} lines)`}
-        </button>
-      )}
-    </div>
-  )
-}
-
-/** Specialized block for run_python tool calls — collapsed by default with code styling */
-function PythonCodeBlock({ content }: { content: string }) {
-  const [expanded, setExpanded] = useState(false)
-
-  let code = content
-  try {
-    const parsed = JSON.parse(content)
-    if (parsed.code) code = parsed.code
-  } catch { /* use raw content */ }
-
-  const lines = code.split('\n')
-  // Extract summary from first comment line
-  const commentLine = lines.find(l => /^\s*#[^!]/.test(l))
-  const summary = commentLine
-    ? commentLine.trim().replace(/^#+\s*/, '')
-    : lines.find(l => l.trim() && !l.trim().startsWith('import') && !l.trim().startsWith('from') && !l.trim().startsWith('#'))?.trim().slice(0, 60)
-      || 'Python code'
-
-  return (
-    <div>
-      <button
-        onClick={() => setExpanded(v => !v)}
-        style={{
-          display: 'flex', alignItems: 'center', gap: 6, width: '100%',
-          fontSize: 11, color: 'var(--text-2)', background: 'none', border: 'none',
-          cursor: 'pointer', padding: '2px 0', textAlign: 'left',
-        }}
-      >
-        <span style={{ flexShrink: 0 }}>{expanded ? '▼' : '▶'}</span>
-        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {summary}
-        </span>
-        <span style={{ flexShrink: 0, fontSize: 10, color: 'var(--text-3)' }}>
-          {lines.length} lines
-        </span>
-      </button>
-      {expanded && (
-        <pre className="ai-code-block" style={{ marginTop: 4 }}>
-          <code>{code}</code>
-        </pre>
-      )}
-    </div>
-  )
-}
-
-// Simple markdown-like rendering for AI messages
-function MessageContent({ text, onOpenFile, currentDir, hoverTimerRef, setHoverPreview }: {
-  text: string
-  onOpenFile?: (path: string, line?: number) => void
-  currentDir?: string
-  hoverTimerRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>
-  setHoverPreview: (v: { x: number; y: number; content: string; path: string; line: number } | null) => void
-}) {
-  // Split by code blocks
-  const parts = text.split(/(```[\s\S]*?```)/g)
-  return (
-    <>
-      {parts.map((part, i) => {
-        if (part.startsWith('```') && part.endsWith('```')) {
-          const inner = part.slice(3, -3)
-          const newline = inner.indexOf('\n')
-          const code = newline >= 0 ? inner.slice(newline + 1) : inner
-          return (
-            <pre key={i} className="ai-code-block">
-              <code>{code}</code>
-            </pre>
-          )
-        }
-        // Bold + inline code
-        const html = part
-          .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-          .replace(/`([^`]+)`/g, '<code class="ai-inline-code">$1</code>')
-          // File references: path/to/file.ext:42 or C:\path\file.ext:42-50
-          .replace(
-            /(?<![`<\w])(?:[a-zA-Z]:[/\\])?([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9]+):(\d+)(?:-(\d+))?(?![`>\w])/g,
-            (_match, filePath, lineStart, _lineEnd) => {
-              const line = parseInt(lineStart, 10)
-              return `<a class="ai-file-link" data-path="${DOMPurify.sanitize(filePath)}" data-line="${line}" title="${filePath}:${lineStart}${_lineEnd ? '-' + _lineEnd : ''}">${filePath}:${lineStart}${_lineEnd ? '-' + _lineEnd : ''}</a>`
-            }
-          )
-        return (
-          <span
-            key={i}
-            dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html, { ADD_ATTR: ['data-path', 'data-line'] }) }}
-            onClick={(e) => {
-              const target = e.target as HTMLElement
-              if (target.classList.contains('ai-file-link')) {
-                const path = target.getAttribute('data-path')
-                const line = parseInt(target.getAttribute('data-line') || '0', 10)
-                if (path && onOpenFile) onOpenFile(path, line || undefined)
-              }
-            }}
-            onMouseOver={(e) => {
-              const target = e.target as HTMLElement
-              if (target.classList.contains('ai-file-link')) {
-                const path = target.getAttribute('data-path')
-                const line = parseInt(target.getAttribute('data-line') || '0', 10)
-                if (path && line > 0) {
-                  if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
-                  hoverTimerRef.current = setTimeout(async () => {
-                    try {
-                      const fullPath = currentDir ? `${currentDir}/${path}` : path
-                      const content = await readFileLines(fullPath, line, 3)
-                      const rect = target.getBoundingClientRect()
-                      setHoverPreview({ x: rect.left, y: rect.bottom + 4, content, path, line })
-                    } catch { /* skip */ }
-                  }, 200)
-                }
-              }
-            }}
-            onMouseOut={(e) => {
-              const target = e.target as HTMLElement
-              if (target.classList.contains('ai-file-link')) {
-                if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
-                setHoverPreview(null)
-              }
-            }}
-          />
-        )
-      })}
-    </>
-  )
-}
-
 // Auto-summarize conversation via LLM (non-streaming, fire-and-forget)
 async function triggerSummarize(
   config: AiConfig,
@@ -1258,7 +671,6 @@ async function triggerSummarize(
   _sessionId: string,
 ): Promise<string | null> {
   try {
-    const { invoke } = await import('@tauri-apps/api/core')
     const conversation = msgs.slice(-20).map(m => `${m.role}: ${m.content}`).join('\n')
     const body = {
       model: config.model,

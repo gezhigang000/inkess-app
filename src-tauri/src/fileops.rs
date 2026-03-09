@@ -111,6 +111,10 @@ fn search_recursive(
         }
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
+        // Skip symlinks to prevent traversal attacks and infinite loops
+        if let Ok(ft) = entry.file_type() {
+            if ft.is_symlink() { continue; }
+        }
         // Skip hidden files/dirs
         if name.starts_with('.') {
             continue;
@@ -250,6 +254,10 @@ fn grep_recursive(
         }
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
+        // Skip symlinks to prevent traversal attacks and infinite loops
+        if let Ok(ft) = entry.file_type() {
+            if ft.is_symlink() { continue; }
+        }
         if name.starts_with('.') {
             continue;
         }
@@ -282,5 +290,298 @@ fn grep_recursive(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    // --- truncate_line tests ---
+
+    #[test]
+    fn truncate_line_short_string() {
+        assert_eq!(truncate_line("hello", 500), "hello");
+    }
+
+    #[test]
+    fn truncate_line_exact_limit() {
+        let s = "a".repeat(500);
+        assert_eq!(truncate_line(&s, 500), s);
+    }
+
+    #[test]
+    fn truncate_line_exceeds_limit() {
+        let s = "a".repeat(510);
+        let result = truncate_line(&s, 500);
+        assert!(result.ends_with("..."));
+        assert_eq!(result.len(), 503); // 500 + "..."
+    }
+
+    #[test]
+    fn truncate_line_multibyte_boundary() {
+        // Chinese chars are 3 bytes each
+        let s = "\u{4e2d}".repeat(200); // 600 bytes total
+        let result = truncate_line(&s, 500);
+        assert!(result.ends_with("..."));
+        // Should truncate at a valid char boundary (multiple of 3)
+        let without_dots = &result[..result.len() - 3];
+        assert!(without_dots.len() <= 500);
+        // Verify it's valid UTF-8 by checking we can iterate chars
+        assert!(without_dots.chars().count() > 0);
+    }
+
+    #[test]
+    fn truncate_line_empty_string() {
+        assert_eq!(truncate_line("", 500), "");
+    }
+
+    // --- matches_file_pattern tests ---
+
+    #[test]
+    fn matches_file_pattern_glob_ext() {
+        assert!(matches_file_pattern("foo.rs", "*.rs"));
+        assert!(matches_file_pattern("FOO.RS", "*.rs"));
+        assert!(!matches_file_pattern("foo.py", "*.rs"));
+    }
+
+    #[test]
+    fn matches_file_pattern_exact() {
+        assert!(matches_file_pattern("Cargo.toml", "cargo.toml"));
+        assert!(!matches_file_pattern("cargo.lock", "cargo.toml"));
+    }
+
+    // --- is_binary tests ---
+
+    #[test]
+    fn is_binary_text_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.txt");
+        fs::write(&path, "hello world").unwrap();
+        assert!(!is_binary(&path.to_path_buf()));
+    }
+
+    #[test]
+    fn is_binary_with_null_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.bin");
+        fs::write(&path, b"hello\x00world").unwrap();
+        assert!(is_binary(&path.to_path_buf()));
+    }
+
+    #[test]
+    fn is_binary_nonexistent() {
+        let path = PathBuf::from("/tmp/nonexistent_file_12345");
+        assert!(!is_binary(&path));
+    }
+
+    // --- search_recursive tests ---
+
+    #[test]
+    fn search_files_empty_query_returns_empty() {
+        let result = search_files("/tmp".to_string(), "  ".to_string());
+        assert_eq!(result.unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn search_files_finds_matching_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("hello.txt"), "content").unwrap();
+        fs::write(root.join("world.md"), "content").unwrap();
+        fs::create_dir(root.join("sub")).unwrap();
+        fs::write(root.join("sub").join("hello.rs"), "code").unwrap();
+
+        let result = search_files(root.to_string_lossy().to_string(), "hello".to_string()).unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|r| r.contains("hello.txt")));
+        assert!(result.iter().any(|r| r.contains("hello.rs")));
+    }
+
+    #[test]
+    fn search_files_skips_hidden_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir(root.join(".hidden")).unwrap();
+        fs::write(root.join(".hidden").join("secret.txt"), "data").unwrap();
+        fs::write(root.join("visible.txt"), "data").unwrap();
+
+        let result = search_files(root.to_string_lossy().to_string(), "txt".to_string()).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result[0].contains("visible"));
+    }
+
+    #[test]
+    fn search_files_case_insensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("README.md"), "content").unwrap();
+
+        let result = search_files(root.to_string_lossy().to_string(), "readme".to_string()).unwrap();
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn search_files_respects_max_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for i in 0..60 {
+            fs::write(root.join(format!("file{}.txt", i)), "data").unwrap();
+        }
+
+        let result = search_files(root.to_string_lossy().to_string(), "file".to_string()).unwrap();
+        assert!(result.len() <= SEARCH_MAX_RESULTS);
+    }
+
+    // --- copy_file_to_dir naming collision tests ---
+
+    #[test]
+    fn copy_file_to_dir_basic() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let dest_dir = tempfile::tempdir().unwrap();
+        let src_file = src_dir.path().join("image.png");
+        fs::write(&src_file, b"fake image data").unwrap();
+
+        let result = copy_file_to_dir(
+            src_file.to_string_lossy().to_string(),
+            dest_dir.path().to_string_lossy().to_string(),
+        ).unwrap();
+        assert_eq!(result, "image.png");
+        assert!(dest_dir.path().join("image.png").exists());
+    }
+
+    #[test]
+    fn copy_file_to_dir_collision_numbering() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let dest_dir = tempfile::tempdir().unwrap();
+        let src_file = src_dir.path().join("photo.jpg");
+        fs::write(&src_file, b"data").unwrap();
+
+        // Create existing files in destination to trigger collision
+        fs::write(dest_dir.path().join("photo.jpg"), b"existing").unwrap();
+        fs::write(dest_dir.path().join("photo-1.jpg"), b"existing").unwrap();
+
+        let result = copy_file_to_dir(
+            src_file.to_string_lossy().to_string(),
+            dest_dir.path().to_string_lossy().to_string(),
+        ).unwrap();
+        assert_eq!(result, "photo-2.jpg");
+        assert!(dest_dir.path().join("photo-2.jpg").exists());
+    }
+
+    #[test]
+    fn copy_file_to_dir_no_extension() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let dest_dir = tempfile::tempdir().unwrap();
+        let src_file = src_dir.path().join("Makefile");
+        fs::write(&src_file, b"all:").unwrap();
+        fs::write(dest_dir.path().join("Makefile"), b"existing").unwrap();
+
+        let result = copy_file_to_dir(
+            src_file.to_string_lossy().to_string(),
+            dest_dir.path().to_string_lossy().to_string(),
+        ).unwrap();
+        assert_eq!(result, "Makefile-1");
+    }
+
+    #[test]
+    fn copy_file_to_dir_src_not_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = copy_file_to_dir(
+            dir.path().to_string_lossy().to_string(),
+            "/tmp".to_string(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn copy_file_to_dir_dest_not_dir() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let src_file = src_dir.path().join("test.txt");
+        fs::write(&src_file, b"data").unwrap();
+
+        let result = copy_file_to_dir(
+            src_file.to_string_lossy().to_string(),
+            "/tmp/nonexistent_dir_xyz_12345".to_string(),
+        );
+        assert!(result.is_err());
+    }
+
+    // --- grep_files tests ---
+
+    #[test]
+    fn grep_files_empty_pattern() {
+        let result = grep_files("/tmp".to_string(), "  ".to_string(), None);
+        assert_eq!(result.unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn grep_files_finds_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("test.rs"), "fn main() {\n    println!(\"hello\");\n}\n").unwrap();
+
+        let result = grep_files(
+            root.to_string_lossy().to_string(),
+            "println".to_string(),
+            None,
+        ).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result[0].contains("test.rs:2:"));
+        assert!(result[0].contains("println"));
+    }
+
+    #[test]
+    fn grep_files_with_file_pattern() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("code.rs"), "let x = 1;\n").unwrap();
+        fs::write(root.join("code.py"), "x = 1\n").unwrap();
+
+        let result = grep_files(
+            root.to_string_lossy().to_string(),
+            "x".to_string(),
+            Some("*.rs".to_string()),
+        ).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result[0].contains("code.rs"));
+    }
+
+    #[test]
+    fn grep_files_skips_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("binary.dat"), b"hello\x00world\n").unwrap();
+        fs::write(root.join("text.txt"), "hello world\n").unwrap();
+
+        let result = grep_files(
+            root.to_string_lossy().to_string(),
+            "hello".to_string(),
+            None,
+        ).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result[0].contains("text.txt"));
+    }
+
+    // --- validate_parent tests (indirect via create_file) ---
+
+    #[test]
+    fn create_file_in_valid_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("new_file.txt");
+        let result = create_file(file_path.to_string_lossy().to_string(), "content".to_string());
+        assert!(result.is_ok());
+        assert_eq!(fs::read_to_string(&file_path).unwrap(), "content");
+    }
+
+    #[test]
+    fn create_file_already_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("existing.txt");
+        fs::write(&file_path, "old").unwrap();
+        let result = create_file(file_path.to_string_lossy().to_string(), "new".to_string());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("already exists"));
     }
 }

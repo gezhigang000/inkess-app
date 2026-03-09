@@ -3,7 +3,7 @@ import { type ThemeId, themes } from '../lib/themes'
 import { useI18n, type Language } from '../lib/i18n'
 import { useLicense } from '../lib/license'
 import { useFocusTrap } from '../lib/useFocusTrap'
-import { getSnapshotStats, cleanupSnapshots, loadSettings, saveSettings, ragStats, ragRebuild, mcpListServers, mcpAddServer, mcpRemoveServer, mcpRestartServer, getSystemEnvVars, getShellEnvVars, parseShellFunctions, type SnapshotStats, type RagIndexStats, type McpServerStatus, type TerminalProvider, type ShellFunction } from '../lib/tauri'
+import { getSnapshotStats, cleanupSnapshots, loadSettings, saveSettings, mcpListServers, mcpAddServer, mcpRemoveServer, mcpRestartServer, getSystemEnvVars, getShellEnvVars, parseShellFunctions, type SnapshotStats, type McpServerStatus, type TerminalProvider, type ShellFunction } from '../lib/tauri'
 
 const MCP_TEMPLATES = [
   { name: 'Filesystem', command: 'npx', args: '-y @modelcontextprotocol/server-filesystem /path', transport: 'stdio' as const, env: '' },
@@ -127,8 +127,6 @@ export function SettingsPanel({ visible, onClose, themeId, onSetTheme, onToast, 
   const { isPro, licenseKey } = useLicense()
   const trapRef = useFocusTrap(visible)
   const [stats, setStats] = useState<SnapshotStats | null>(null)
-  const [ragStat, setRagStat] = useState<RagIndexStats | null>(null)
-  const [rebuilding, setRebuilding] = useState(false)
   const [retentionDays, setRetentionDays] = useState(() => {
     return parseInt(localStorage.getItem('inkess-retention-days') || '30') || 30
   })
@@ -154,7 +152,6 @@ export function SettingsPanel({ visible, onClose, themeId, onSetTheme, onToast, 
   useEffect(() => {
     if (visible) {
       getSnapshotStats().then(setStats).catch(() => {})
-      ragStats().then(setRagStat).catch(() => setRagStat(null))
       mcpListServers().then(setMcpServers).catch(() => {})
       // Load retention settings from settings.json
       loadSettings().then(s => {
@@ -284,26 +281,6 @@ export function SettingsPanel({ visible, onClose, themeId, onSetTheme, onToast, 
             <button className="git-btn" style={{ fontSize: 12, marginBottom: 20 }} onClick={handleCleanup} disabled={cleaning}>
               {cleaning ? t('settings.cleaning') : t('settings.cleanupNow')}
             </button>
-            {/* Knowledge Base */}
-            <h4 style={{ margin: '0 0 8px', fontSize: 13, color: 'var(--text)' }}>{t('rag.knowledgeBase')}</h4>
-            {ragStat ? (
-              <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 8 }}>
-                {t('rag.stats', { files: ragStat.file_count, chunks: ragStat.chunk_count, size: formatBytes(ragStat.db_size_bytes) })}
-              </div>
-            ) : (
-              <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 8 }}>{t('rag.status.disabled')}</div>
-            )}
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button className="git-btn" style={{ fontSize: 12 }} onClick={async () => {
-                if (!currentDir) return
-                setRebuilding(true)
-                try { await ragRebuild(currentDir); const s = await ragStats(); setRagStat(s); onToast(t('rag.rebuildDone')) }
-                catch { onToast(t('rag.initFailed')) }
-                finally { setRebuilding(false) }
-              }} disabled={rebuilding || !currentDir}>
-                {rebuilding ? t('rag.rebuilding') : t('rag.rebuild')}
-              </button>
-            </div>
             <div className="flex justify-end mt-4">
               <button className="toolbar-btn toolbar-btn-accent" onClick={handleSave}>{t('settings.save')}</button>
             </div>

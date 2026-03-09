@@ -203,8 +203,8 @@ export function TerminalPanel({ cwd, visible, onOpenSettings, onOpenLog }: Termi
           >
             <span className="truncate">
               {tab.providerName
-                ? `${tab.cwd.split('/').pop() || 'Terminal'} (${tab.providerName})`
-                : tab.cwd.split('/').pop() || 'Terminal'}
+                ? `${tab.cwd.replace(/\\/g, '/').split('/').pop() || 'Terminal'} (${tab.providerName})`
+                : tab.cwd.replace(/\\/g, '/').split('/').pop() || 'Terminal'}
             </span>
             {tabs.length > 1 && (
               <span className="terminal-tab-close" onClick={(e) => { e.stopPropagation(); closeTab(i) }}>×</span>
@@ -285,7 +285,7 @@ export function TerminalPanel({ cwd, visible, onOpenSettings, onOpenLog }: Termi
                   <div key={log.filename} className="dropdown-item" style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 10px', fontSize: 11 }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <span className="truncate" style={{ flex: 1 }}>{log.cwd.split('/').pop() || 'Terminal'}</span>
+                        <span className="truncate" style={{ flex: 1 }}>{log.cwd.replace(/\\/g, '/').split('/').pop() || 'Terminal'}</span>
                         {log.recovered && <span style={{ fontSize: 9, color: 'var(--orange, #f59e0b)', background: 'var(--bg-2)', borderRadius: 3, padding: '0 3px' }}>{t('terminal.recovered')}</span>}
                       </div>
                       <div style={{ fontSize: 9, color: 'var(--text-3)' }}>
@@ -296,7 +296,7 @@ export function TerminalPanel({ cwd, visible, onOpenSettings, onOpenLog }: Termi
                     <button style={{ border: 'none', background: 'transparent', color: 'var(--text-3)', cursor: 'pointer', padding: '2px 4px', borderRadius: 3, fontSize: 11 }} title={t('terminal.viewLog')} onClick={() => {
                       setShowHistoryMenu(false)
                       readTerminalLog(log.filename).then(content => {
-                        setLogViewerTitle(log.cwd.split('/').pop() || 'Terminal')
+                        setLogViewerTitle(log.cwd.replace(/\\/g, '/').split('/').pop() || 'Terminal')
                         setLogViewerContent(content)
                       }).catch(() => {})
                     }}>

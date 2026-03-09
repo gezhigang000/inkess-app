@@ -68,7 +68,7 @@ export function SidebarContextMenu({
   if (onOpenGitPanel) {
     items.push({ label: t('ctx.gitOps'), action: onOpenGitPanel })
   } else if (!isGitRepo && onGitInit && gitInitTarget) {
-    const dirName = gitInitTarget.split('/').pop() || gitInitTarget
+    const dirName = gitInitTarget.replace(/\\/g, '/').split('/').pop() || gitInitTarget
     items.push({ label: t('ctx.gitInit', { dir: dirName }), action: () => onGitInit(gitInitTarget) })
   }
 

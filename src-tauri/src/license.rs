@@ -98,6 +98,129 @@ pub fn license_deactivate() -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- Key format validation tests ---
+
+    #[test]
+    fn verify_key_wrong_prefix() {
+        assert!(!verify_key("WRONG-AAAA-BBBB-CCCC-DDDD"));
+    }
+
+    #[test]
+    fn verify_key_too_few_segments() {
+        assert!(!verify_key("INKESS-AAAA-BBBB-CCCC"));
+    }
+
+    #[test]
+    fn verify_key_too_many_segments() {
+        assert!(!verify_key("INKESS-AAAA-BBBB-CCCC-DDDD-EEEE"));
+    }
+
+    #[test]
+    fn verify_key_empty_string() {
+        assert!(!verify_key(""));
+    }
+
+    #[test]
+    fn verify_key_segment_too_short() {
+        assert!(!verify_key("INKESS-AA-BBBB-CCCC-DDDD"));
+    }
+
+    #[test]
+    fn verify_key_segment_too_long() {
+        assert!(!verify_key("INKESS-AAAAA-BBBB-CCCC-DDDD"));
+    }
+
+    #[test]
+    fn verify_key_wrong_checksum() {
+        // Valid format but wrong checksum — should fail HMAC verification
+        assert!(!verify_key("INKESS-AAAA-BBBB-CCCC-ZZZZ"));
+    }
+
+    #[test]
+    fn verify_key_all_segments_must_be_4_chars() {
+        assert!(!verify_key("INKESS-ABC-BBBB-CCCC-DDDD"));
+        assert!(!verify_key("INKESS-AAAA-B-CCCC-DDDD"));
+        assert!(!verify_key("INKESS-AAAA-BBBB-C-DDDD"));
+        assert!(!verify_key("INKESS-AAAA-BBBB-CCCC-D"));
+    }
+
+    #[test]
+    fn verify_key_correct_checksum_with_dev_keys() {
+        // Generate a valid key using the dev/placeholder HMAC keys
+        let payload = "INKESS-TEST-ABCD-EF01";
+        let key = hmac_key();
+        let mut mac = HmacSha256::new_from_slice(&key).unwrap();
+        mac.update(payload.as_bytes());
+        let result = mac.finalize().into_bytes();
+        let checksum = hex::encode(result);
+        let check_segment = &checksum[..4].to_uppercase();
+
+        let full_key = format!("{}-{}", payload, check_segment);
+        assert!(verify_key(&full_key));
+    }
+
+    #[test]
+    fn verify_key_case_insensitive_checksum() {
+        // Generate a valid key and verify with different case
+        let payload = "INKESS-CAFE-BABE-DEAD";
+        let key = hmac_key();
+        let mut mac = HmacSha256::new_from_slice(&key).unwrap();
+        mac.update(payload.as_bytes());
+        let result = mac.finalize().into_bytes();
+        let checksum = hex::encode(result);
+        let check_segment = &checksum[..4].to_lowercase();
+
+        let full_key = format!("{}-{}", payload, check_segment);
+        assert!(verify_key(&full_key));
+    }
+
+    #[test]
+    fn verify_key_different_payload_different_checksum() {
+        // Two different payloads should not have the same checksum
+        let payload1 = "INKESS-AAAA-BBBB-CCCC";
+        let payload2 = "INKESS-XXXX-YYYY-ZZZZ";
+        let key = hmac_key();
+
+        let mut mac1 = HmacSha256::new_from_slice(&key).unwrap();
+        mac1.update(payload1.as_bytes());
+        let check1 = hex::encode(mac1.finalize().into_bytes())[..4].to_uppercase();
+
+        let mut mac2 = HmacSha256::new_from_slice(&key).unwrap();
+        mac2.update(payload2.as_bytes());
+        let check2 = hex::encode(mac2.finalize().into_bytes())[..4].to_uppercase();
+
+        // Using checksum from payload1 with payload2 should fail
+        let wrong_key = format!("{}-{}", payload2, check1);
+        if check1 != check2 {
+            assert!(!verify_key(&wrong_key));
+        }
+    }
+
+    #[test]
+    fn hmac_key_is_not_empty() {
+        let key = hmac_key();
+        assert!(!key.is_empty());
+    }
+
+    // --- LicenseInfo serialization ---
+
+    #[test]
+    fn license_info_roundtrip_json() {
+        let info = LicenseInfo {
+            key: "INKESS-AAAA-BBBB-CCCC-DDDD".to_string(),
+            activated_at: "2024-01-01T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: LicenseInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.key, info.key);
+        assert_eq!(parsed.activated_at, info.activated_at);
+    }
+}
+
 #[tauri::command]
 pub fn open_external_url(url: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]

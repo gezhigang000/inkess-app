@@ -60,7 +60,7 @@ export function SearchBar({ currentDir, onOpenFile, onOpenDir }: SearchBarProps)
     setQuery('')
     setResults([])
     // Check if it looks like a directory (no extension or ends with /)
-    if (relPath.endsWith('/') || !relPath.split('/').pop()?.includes('.')) {
+    if (relPath.endsWith('/') || !relPath.replace(/\\/g, '/').split('/').pop()?.includes('.')) {
       onOpenDir(fullPath)
     } else {
       onOpenFile(fullPath)
@@ -119,7 +119,7 @@ export function SearchBar({ currentDir, onOpenFile, onOpenDir }: SearchBarProps)
               <div className="px-4 py-3 text-[12px]" style={{ color: 'var(--text-3)' }}>{t('search.noResults')}</div>
             )}
             {results.map((r, i) => {
-              const parts = r.split('/')
+              const parts = r.replace(/\\/g, '/').split('/')
               const name = parts.pop() || r
               const dir = parts.join('/')
               return (

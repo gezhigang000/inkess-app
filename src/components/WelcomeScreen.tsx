@@ -17,7 +17,7 @@ export function WelcomeScreen({ recentDirs, onOpenDir, onOpen }: WelcomeScreenPr
         <div className="welcome-recent">
           <div className="welcome-recent-title">{t('welcome.recent')}</div>
           {recentDirs.map(dir => {
-            const name = dir.split('/').filter(Boolean).pop() || dir
+            const name = dir.replace(/\\/g, '/').split('/').filter(Boolean).pop() || dir
             return (
               <div
                 key={dir}

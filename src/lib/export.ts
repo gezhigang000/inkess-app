@@ -393,8 +393,9 @@ export async function exportFile(
   }
   const raw = filePath || 'document'
   // Extract basename for display, keep full path for defaultPath
-  const baseName = raw.includes('/') ? raw.split('/').pop()! : raw
-  const defaultDir = raw.includes('/') ? raw.substring(0, raw.lastIndexOf('/') + 1) : ''
+  const normalized = raw.replace(/\\/g, '/')
+  const baseName = normalized.includes('/') ? normalized.split('/').pop()! : raw
+  const defaultDir = raw.includes('/') || raw.includes('\\') ? raw.substring(0, Math.max(raw.lastIndexOf('/'), raw.lastIndexOf('\\')) + 1) : ''
   const stem = baseName.replace(/\.\w+$/, '')
   // Free users get a watermark appended
   const content = isPro ? markdown : markdown + '\n\n---\n\n<p style="text-align:center;font-size:11px;color:#aaa;">Made with Inkess</p>\n'

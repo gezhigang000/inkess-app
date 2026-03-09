@@ -7,7 +7,7 @@ use std::thread;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize, Child};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::session_logger::{SessionLogger, SharedLogger};
+use crate::terminal::session_logger::{SessionLogger, SharedLogger};
 
 const MAX_SESSIONS: usize = 20;
 

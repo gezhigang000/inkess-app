@@ -8,7 +8,7 @@ export interface FileEntry {
 }
 
 export interface SnapshotInfo {
-  id: number
+  id: string
   created_at: string
 }
 
@@ -42,8 +42,8 @@ export async function listSnapshots(filePath: string): Promise<SnapshotInfo[]> {
   return invoke<SnapshotInfo[]>('list_snapshots', { filePath })
 }
 
-export async function getSnapshotContent(snapshotId: number): Promise<string> {
-  return invoke<string>('get_snapshot_content', { snapshotId })
+export async function getSnapshotContent(filePath: string, snapshotId: string): Promise<string> {
+  return invoke<string>('get_snapshot_content', { filePath, snapshotId })
 }
 
 export interface SnapshotStats {
@@ -273,6 +273,12 @@ export interface AiStreamEvent {
   content: string
 }
 
+export interface SkillChangedEvent {
+  session_id: string
+  skill_id: string
+  skill_name: string
+}
+
 export async function aiSaveConfig(config: AiConfig): Promise<void> {
   return invoke<void>('ai_save_config', { config })
 }
@@ -289,8 +295,8 @@ export async function aiTestSearch(provider: string, apiKey: string): Promise<st
   return invoke<string>('ai_test_search', { provider, apiKey })
 }
 
-export async function aiChat(sessionId: string, messages: ChatMessage[], config: AiConfig, deepMode?: boolean, cwd?: string): Promise<void> {
-  return invoke<void>('ai_chat', { sessionId, messages, config, deepMode: deepMode || false, cwd: cwd || '' })
+export async function aiChat(sessionId: string, messages: ChatMessage[], config: AiConfig, deepMode?: boolean, cwd?: string, currentSkillId?: string): Promise<void> {
+  return invoke<void>('ai_chat', { sessionId, messages, config, deepMode: deepMode || false, cwd: cwd || '', currentSkillId: currentSkillId || null })
 }
 
 export interface MemoryEntry {
@@ -375,37 +381,10 @@ export async function licenseDeactivate(): Promise<void> {
   return invoke<void>('license_deactivate')
 }
 
-// --- RAG Knowledge Base ---
+// --- BM25 Full-Text Search ---
 
-export interface RagSearchResult {
-  path: string
-  content: string
-  start_line: number
-  end_line: number
-  heading: string | null
-  distance: number
-}
-
-export interface RagIndexStats {
-  file_count: number
-  chunk_count: number
-  db_size_bytes: number
-}
-
-export async function ragInit(dir: string): Promise<void> {
-  return invoke<void>('rag_init', { dir })
-}
-
-export async function ragSearch(query: string, topK?: number): Promise<RagSearchResult[]> {
-  return invoke<RagSearchResult[]>('rag_search', { query, topK })
-}
-
-export async function ragStats(): Promise<RagIndexStats> {
-  return invoke<RagIndexStats>('rag_stats')
-}
-
-export async function ragRebuild(dir: string): Promise<void> {
-  return invoke<void>('rag_rebuild', { dir })
+export async function bm25Init(dir: string): Promise<void> {
+  return invoke<void>('bm25_init', { dir })
 }
 
 // --- MCP Servers ---

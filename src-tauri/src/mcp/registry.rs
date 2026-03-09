@@ -289,3 +289,233 @@ impl McpRegistry {
         &self.configs
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mcp_registry_new_empty() {
+        let registry = McpRegistry::new();
+        assert_eq!(registry.all_tools().len(), 0);
+        assert_eq!(registry.logs.len(), 0);
+    }
+
+    #[test]
+    fn test_mcp_tool_call_log_fields() {
+        let log = McpToolCallLog {
+            timestamp: 1234567890,
+            server_id: "test-server".to_string(),
+            tool_name: "read_file".to_string(),
+            arguments: r#"{"path":"/test.txt"}"#.to_string(),
+            result: "file content".to_string(),
+            duration_ms: 150,
+            is_error: false,
+        };
+        assert_eq!(log.timestamp, 1234567890);
+        assert_eq!(log.server_id, "test-server");
+        assert_eq!(log.tool_name, "read_file");
+        assert_eq!(log.duration_ms, 150);
+        assert!(!log.is_error);
+    }
+
+    #[test]
+    fn test_mcp_tool_call_log_serialization() {
+        let log = McpToolCallLog {
+            timestamp: 1000,
+            server_id: "srv1".to_string(),
+            tool_name: "tool1".to_string(),
+            arguments: "{}".to_string(),
+            result: "ok".to_string(),
+            duration_ms: 50,
+            is_error: false,
+        };
+        let serialized = serde_json::to_value(&log).unwrap();
+        assert_eq!(serialized["timestamp"], 1000);
+        assert_eq!(serialized["server_id"], "srv1");
+        assert_eq!(serialized["tool_name"], "tool1");
+        assert_eq!(serialized["duration_ms"], 50);
+        assert_eq!(serialized["is_error"], false);
+    }
+
+    #[test]
+    fn test_mcp_server_config_serialization_with_defaults() {
+        let config = McpServerConfig {
+            id: "test-id".to_string(),
+            name: "Test Server".to_string(),
+            command: "node".to_string(),
+            args: vec!["server.js".to_string()],
+            env: HashMap::new(),
+            enabled: true,
+            transport: McpTransportType::Stdio,
+            url: None,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: McpServerConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.id, "test-id");
+        assert_eq!(deserialized.name, "Test Server");
+        assert!(deserialized.enabled);
+        assert!(matches!(deserialized.transport, McpTransportType::Stdio));
+    }
+
+    #[test]
+    fn test_mcp_server_config_deserialization_defaults() {
+        let json = r#"{"id":"srv","name":"Server"}"#;
+        let config: McpServerConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.id, "srv");
+        assert_eq!(config.name, "Server");
+        assert_eq!(config.command, "");
+        assert_eq!(config.args.len(), 0);
+        assert_eq!(config.env.len(), 0);
+        assert!(config.enabled); // default_true
+        assert!(matches!(config.transport, McpTransportType::Stdio));
+        assert!(config.url.is_none());
+    }
+
+    #[test]
+    fn test_mcp_server_config_with_http_transport() {
+        let config = McpServerConfig {
+            id: "http-srv".to_string(),
+            name: "HTTP Server".to_string(),
+            command: "".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            enabled: true,
+            transport: McpTransportType::Http,
+            url: Some("http://localhost:8080".to_string()),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("http"));
+        assert!(json.contains("http://localhost:8080"));
+    }
+
+    #[test]
+    fn test_mcp_server_status_serialization() {
+        let status = McpServerStatus {
+            id: "srv1".to_string(),
+            name: "Server 1".to_string(),
+            connected: true,
+            tool_count: 5,
+            error: None,
+            transport: "stdio".to_string(),
+            last_seen: Some(1234567890),
+        };
+        let serialized = serde_json::to_value(&status).unwrap();
+        assert_eq!(serialized["id"], "srv1");
+        assert_eq!(serialized["connected"], true);
+        assert_eq!(serialized["tool_count"], 5);
+        assert_eq!(serialized["transport"], "stdio");
+        assert_eq!(serialized["last_seen"], 1234567890);
+    }
+
+    #[test]
+    fn test_mcp_server_status_with_error() {
+        let status = McpServerStatus {
+            id: "srv2".to_string(),
+            name: "Server 2".to_string(),
+            connected: false,
+            tool_count: 0,
+            error: Some("Connection failed".to_string()),
+            transport: "http".to_string(),
+            last_seen: None,
+        };
+        let serialized = serde_json::to_value(&status).unwrap();
+        assert_eq!(serialized["connected"], false);
+        assert_eq!(serialized["error"], "Connection failed");
+        assert!(serialized["last_seen"].is_null());
+    }
+
+    #[test]
+    fn test_mcp_tool_info_serialization() {
+        let tool_info = McpToolInfo {
+            server_id: "srv".to_string(),
+            server_name: "Test Server".to_string(),
+            name: "read_file".to_string(),
+            description: "Read a file".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+        };
+        let serialized = serde_json::to_value(&tool_info).unwrap();
+        assert_eq!(serialized["server_id"], "srv");
+        assert_eq!(serialized["server_name"], "Test Server");
+        assert_eq!(serialized["name"], "read_file");
+        assert_eq!(serialized["description"], "Read a file");
+        assert_eq!(serialized["input_schema"]["type"], "object");
+    }
+
+    #[test]
+    fn test_truncate_str_within_limit() {
+        let s = "hello world";
+        let result = truncate_str(s, 20);
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn test_truncate_str_exact_limit() {
+        let s = "hello";
+        let result = truncate_str(s, 5);
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn test_truncate_str_exceeds_limit() {
+        let s = "hello world";
+        let result = truncate_str(s, 5);
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn test_truncate_str_cjk_safe() {
+        let s = "你好世界"; // 12 bytes (3 chars × 4 bytes each in UTF-8)
+        let result = truncate_str(s, 8);
+        // Should truncate at char boundary, not in the middle of a char
+        assert_eq!(result, "你好");
+    }
+
+    #[test]
+    fn test_truncate_str_emoji_safe() {
+        let s = "Hello 👋 World"; // emoji is 4 bytes
+        let result = truncate_str(s, 8);
+        // Should not break emoji
+        assert!(result.len() <= 8);
+        assert!(result.is_char_boundary(result.len()));
+    }
+
+    #[test]
+    fn test_truncate_str_empty() {
+        let s = "";
+        let result = truncate_str(s, 10);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_truncate_str_zero_limit() {
+        let s = "hello";
+        let result = truncate_str(s, 0);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_default_true_function() {
+        assert_eq!(default_true(), true);
+    }
+
+    #[test]
+    fn test_now_ts_returns_positive() {
+        let ts = now_ts();
+        assert!(ts > 0);
+        // Should be a reasonable timestamp (after 2020)
+        assert!(ts > 1577836800); // Jan 1, 2020
+    }
+
+    #[test]
+    fn test_mcp_registry_tool_logs_empty() {
+        let registry = McpRegistry::new();
+        assert_eq!(registry.tool_logs().len(), 0);
+    }
+
+    #[test]
+    fn test_mcp_registry_configs_empty() {
+        let registry = McpRegistry::new();
+        assert_eq!(registry.configs().len(), 0);
+    }
+}

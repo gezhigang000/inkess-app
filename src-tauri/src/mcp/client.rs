@@ -26,7 +26,7 @@ impl McpClient {
         };
 
         let server_info = transport
-            .send_request("initialize", Some(serde_json::to_value(&init_params).unwrap()))
+            .send_request("initialize", Some(serde_json::to_value(&init_params).map_err(|e| format!("Failed to serialize init params: {}", e))?))
             .await?;
 
         // Send "initialized" notification
@@ -120,7 +120,7 @@ impl McpClient {
                 version: "1.0.0".to_string(),
             },
         };
-        transport.send_request("initialize", Some(serde_json::to_value(&init_params).unwrap())).await?;
+        transport.send_request("initialize", Some(serde_json::to_value(&init_params).map_err(|e| format!("Failed to serialize init params: {}", e))?)).await?;
         transport.send_notification("notifications/initialized").await?;
 
         let tools_result = transport.send_request("tools/list", Some(serde_json::json!({}))).await?;

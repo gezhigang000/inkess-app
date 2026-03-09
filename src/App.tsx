@@ -15,14 +15,15 @@ import { LicensePanel } from './components/LicensePanel'
 import { UpgradePrompt } from './components/UpgradePrompt'
 import { FindBar } from './components/FindBar'
 import { DevConsole } from './components/DevConsole'
-import { I18nProvider, useI18n } from './lib/i18n'
+import { ShellConfirm } from './components/ShellConfirm'
+import { I18nProvider, useI18n, modKey } from './lib/i18n'
 import { LicenseProvider, useLicense } from './lib/license'
 import {
   readFile, readFileBinary, saveFile, listDirectory, createSnapshot,
   listSnapshots, getSnapshotContent, openFileOrDirDialog, getInitialFile,
   createFile, createDirectory, renameEntry, deleteToTrash,
   watchDirectory, gitStatus, gitInit, loadSettings, saveSettings, getFileSize,
-  ragInit, preloadPythonEnv,
+  bm25Init, preloadPythonEnv,
   type FileEntry, type SnapshotInfo,
 } from './lib/tauri'
 import { type ThemeId } from './lib/themes'
@@ -35,6 +36,8 @@ import { homeDir as getHomeDir } from '@tauri-apps/api/path'
 import './themes/github.css'
 import './themes/minimal.css'
 import './themes/dark.css'
+
+const shiftLabel = modKey === '⌘' ? '⇧' : 'Shift+'
 
 const DEMO_MARKDOWN = `# Welcome to Inkess
 
@@ -56,10 +59,10 @@ Just double-click any \`.md\` file and Inkess will render it beautifully. Core f
 
 | Shortcut | Action |
 |----------|--------|
-| ⌘ O | Open file |
-| ⌘ E | Toggle edit/read |
-| ⌘ S | Save |
-| ⌘ ⇧ E | Quick export PDF |
+| ${modKey}O | Open file |
+| ${modKey}E | Toggle edit/read |
+| ${modKey}S | Save |
+| ${modKey}${shiftLabel}E | Quick export PDF |
 | Esc | Exit editing |
 
 ## Code Highlighting
@@ -73,7 +76,7 @@ fn main() {
 
 ---
 
-Drop files or press ⌘O to get started. Supports Markdown, text, code, images, PDF, and Word files.
+Drop files or press ${modKey}O to get started. Supports Markdown, text, code, images, PDF, and Word files.
 `
 
 const DEMO_CONTENT: ContentData = { type: 'markdown', text: DEMO_MARKDOWN }
@@ -124,7 +127,7 @@ function AppInner() {
   const [latestText, setLatestText] = useState(DEMO_MARKDOWN)
   const [files, setFiles] = useState<FileEntry[]>([])
   const [snapshots, setSnapshots] = useState<SnapshotInfo[]>([])
-  const [activeSnapshotId, setActiveSnapshotId] = useState<number | null>(null)
+  const [activeSnapshotId, setActiveSnapshotId] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<'preview' | 'edit' | 'split'>('preview')
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -334,7 +337,7 @@ function AppInner() {
     try {
       await renameEntry(oldAbsPath, newAbsPath)
       await refreshFiles()
-      const oldName = oldRelPath.split('/').pop()!
+      const oldName = oldRelPath.replace(/\\/g, '/').split('/').pop()!
       if (currentFile === oldName) setCurrentFile(newName)
       showToast(t('toast.renamed'), 'success')
     } catch (e) {
@@ -448,7 +451,7 @@ function AppInner() {
     const reqId = ++openRequestRef.current
     setLoading(true)
     try {
-      const parts = filePath.split('/')
+      const parts = filePath.replace(/\\/g, '/').split('/')
       const fileName = parts[parts.length - 1]
       const fileType = getFileType(fileName)
 
@@ -573,11 +576,11 @@ function AppInner() {
   const handleNavigateDir = useCallback(async (path: string) => {
     setCurrentDir(path)
     setSidebarOpen(true)
-    ragInit(path).catch(e => console.warn('RAG init failed:', e))
+    bm25Init(path).catch(e => console.warn('BM25 init failed:', e))
     preloadPythonEnv().catch(e => console.warn('Python preload failed:', e))
   }, [])
 
-  const handleSelectSnapshot = useCallback(async (id: number | null) => {
+  const handleSelectSnapshot = useCallback(async (id: string | null) => {
     if (id === null) {
       setActiveSnapshotId(null)
       // Restore latest text to current content type
@@ -589,7 +592,7 @@ function AppInner() {
       return
     }
     try {
-      const text = await getSnapshotContent(id)
+      const text = await getSnapshotContent(currentFile || '', id)
       setActiveSnapshotId(id)
       const ft = currentFile ? getFileType(currentFile) : 'markdown'
       if (ft === 'markdown') setContent({ type: 'markdown', text })
@@ -645,8 +648,8 @@ function AppInner() {
       // If listDirectory succeeds, it's a directory
       setCurrentDir(selected)
       setSidebarOpen(true)
-      // Initialize RAG indexing in background
-      ragInit(selected).catch(e => console.warn('RAG init failed:', e))
+      // Initialize BM25 indexing in background
+      bm25Init(selected).catch(e => console.warn('BM25 init failed:', e))
       preloadPythonEnv().catch(e => console.warn('Python preload failed:', e))
     } catch {
       // Not a directory, treat as file
@@ -772,7 +775,7 @@ function AppInner() {
         await listDirectory(path)
         setCurrentDir(path)
         setSidebarOpen(true)
-        ragInit(path).catch(e => console.warn('RAG init failed:', e))
+        bm25Init(path).catch(e => console.warn('BM25 init failed:', e))
         preloadPythonEnv().catch(e => console.warn('Python preload failed:', e))
       } catch {
         openFileRef.current(path)
@@ -942,7 +945,7 @@ function AppInner() {
             onGitInit={handleGitInit}
             onOpenGitPanel={() => setGitPanelOpen(true)}
             onSwitchDir={(path) => {
-              const dirName = path.split('/').pop() || path
+              const dirName = path.replace(/\\/g, '/').split('/').pop() || path
               const doSwitch = () => {
                 setCurrentDir(path)
                 setCurrentFile('')
@@ -1038,6 +1041,7 @@ function AppInner() {
         </div>
       )}
       <Toast toasts={toasts} onDismiss={dismissToast} />
+      <ShellConfirm />
       {devMode && <DevConsole visible={devConsoleOpen} onClose={() => setDevConsoleOpen(false)} />}
       {newFilePopup && (
         <NewFilePopup
@@ -1138,14 +1142,14 @@ function AppInner() {
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <tbody>
                   {[
-                    ['⌘ O', t('about.shortcut.open')],
-                    ['⌘ E', t('about.shortcut.edit')],
-                    ['⌘ S', t('about.shortcut.save')],
-                    ['⌘ F', t('about.shortcut.find')],
-                    ['⌘ ⇧ E', t('about.shortcut.export')],
-                    ['⌘ D', t('about.shortcut.devMode')],
-                    ['⌘ `', t('about.shortcut.terminal')],
-                    ['⌘ ⇧ L', t('about.shortcut.devConsole')],
+                    [`${modKey}O`, t('about.shortcut.open')],
+                    [`${modKey}E`, t('about.shortcut.edit')],
+                    [`${modKey}S`, t('about.shortcut.save')],
+                    [`${modKey}F`, t('about.shortcut.find')],
+                    [`${modKey}${shiftLabel}E`, t('about.shortcut.export')],
+                    [`${modKey}D`, t('about.shortcut.devMode')],
+                    [`${modKey}\``, t('about.shortcut.terminal')],
+                    [`${modKey}${shiftLabel}L`, t('about.shortcut.devConsole')],
                     ['Esc', t('about.shortcut.exitEdit')],
                   ].map(([key, desc]) => (
                     <tr key={key} style={{ borderBottom: '1px solid var(--border-s)' }}>

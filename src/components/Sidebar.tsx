@@ -330,7 +330,7 @@ export function Sidebar({
   }, [])
 
   const confirmRename = useCallback(() => {
-    if (renamingPath && renameValue.trim() && renameValue !== renamingPath.split('/').pop()) {
+    if (renamingPath && renameValue.trim() && renameValue !== renamingPath.replace(/\\/g, '/').split('/').pop()) {
       onRename(renamingPath, renameValue.trim())
     }
     setRenamingPath(null)

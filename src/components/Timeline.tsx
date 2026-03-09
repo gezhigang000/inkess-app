@@ -5,8 +5,8 @@ import { useI18n } from '../lib/i18n'
 interface TimelineProps {
   open: boolean
   snapshots: SnapshotInfo[]
-  activeSnapshotId: number | null
-  onSelectSnapshot: (id: number | null) => void
+  activeSnapshotId: string | null
+  onSelectSnapshot: (id: string | null) => void
 }
 
 function formatTime(isoStr: string, t: (key: string, vars?: Record<string, string | number>) => string): string {
