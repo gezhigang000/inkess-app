@@ -1,6 +1,6 @@
 [package]
 name = "inkess"
-version = "2.7.0"
+version = "2.7.1"
 description = "Inkess — Markdown Reader & Converter"
 authors = ["Inkess Team"]
 license = "MIT"

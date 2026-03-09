@@ -190,8 +190,10 @@ export function SettingsPanel({ visible, onClose, themeId, onSetTheme, onToast, 
   const tabs = [
     { id: 'appearance' as const, label: t('settings.tab.appearance') },
     { id: 'data' as const, label: t('settings.tab.data') },
-    { id: 'mcp' as const, label: t('settings.tab.mcp') },
-    { id: 'providers' as const, label: t('settings.tab.providers') },
+    ...(isPro ? [
+      { id: 'mcp' as const, label: t('settings.tab.mcp') },
+      { id: 'providers' as const, label: t('settings.tab.providers') },
+    ] : []),
     { id: 'license' as const, label: t('settings.tab.license') },
   ]
 
